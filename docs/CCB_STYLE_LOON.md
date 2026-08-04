@@ -4,7 +4,11 @@
 
 ## 安装
 
-在 Loon 中订阅以下 Raw 地址：
+在 iPhone、iPad 或已安装 Loon 的 Mac 上点击：
+
+[**一键导入 Loon**](https://www.nsloon.com/openloon/import?plugin=https%3A%2F%2Fraw.githubusercontent.com%2Fvulpsecula%2FBiliBili-CDN-Loon%2Fmain%2Fcustom%2FBiliBili.Redirect.CCBStyle.plugin)
+
+如果浏览器未唤起 Loon，请复制以下 Raw 地址，然后在 Loon 的「配置 → 插件」中手动添加：
 
 ```text
 https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.plugin
