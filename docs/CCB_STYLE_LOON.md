@@ -7,7 +7,7 @@
 在 Loon 中订阅以下 Raw 地址：
 
 ```text
-https://raw.githubusercontent.com/vulpsecula/Redirect/main/custom/BiliBili.Redirect.CCBStyle.plugin
+https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.plugin
 ```
 
 如果你正在测试 PR 分支，请把 URL 中的 `main` 替换为对应分支名。合并回 `main` 后再改回上述地址。

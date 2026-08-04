@@ -5,7 +5,7 @@
 
 本 fork 额外提供一个仅面向 Loon 的可选 CDN 插件，用于将普通视频 `/upgcxcode/` 请求强制改写到所选节点。
 
-- [安装插件](https://raw.githubusercontent.com/vulpsecula/Redirect/main/custom/BiliBili.Redirect.CCBStyle.plugin)
+- [安装插件](https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.plugin)
 - [使用说明](docs/CCB_STYLE_LOON.md)
 
 > [!IMPORTANT]
