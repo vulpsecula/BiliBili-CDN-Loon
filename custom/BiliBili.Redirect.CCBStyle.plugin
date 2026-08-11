@@ -1,10 +1,10 @@
 #!name = 📺 BiliBili Redirect — CCB Style for Loon
 #!desc = 将 Bilibili 普通视频 UPOS /upgcxcode/ 请求强制改写到所选 CDN。默认使用 cn-hk-eq-01-01.bilivideo.com；保留原路径、签名参数和 Range，并仅拒绝相关域名的 QUIC。
 #!author = vulpsecula
-#!version = 1.1.1
+#!version = 1.1.2
 #!system = iOS,iPadOS,macOS
 #!system_version = 15
-#!loon_version = 3.5.1(978)
+#!loon_version = 3.5.0(969)
 
 [Argument]
 cdn = select,"cn-hk-eq-01-01.bilivideo.com","cn-hk-eq-01-03.bilivideo.com","cn-hk-eq-01-09.bilivideo.com","cn-hk-eq-01-10.bilivideo.com","cn-hk-eq-01-12.bilivideo.com","cn-hk-eq-01-13.bilivideo.com","cn-hk-eq-01-14.bilivideo.com","cn-hk-eq-bcache-13.bilivideo.com","upos-sz-mirrorcosov.bilivideo.com","upos-sz-mirroraliov.bilivideo.com","upos-hz-mirrorakam.akamaized.net","upos-sz-mirrorcos.bilivideo.com","upos-sz-mirrorali.bilivideo.com","upos-sz-mirrorhw.bilivideo.com",tag=目标 CDN 节点,desc=优先选择你所在网络下实际播放速度稳定的节点；默认是香港 Equinix 01-01。
@@ -14,9 +14,9 @@ AND,((PROTOCOL,QUIC),(DOMAIN-SUFFIX,bilivideo.com)),REJECT
 AND,((PROTOCOL,QUIC),(DOMAIN-SUFFIX,acgvideo.com)),REJECT
 AND,((PROTOCOL,QUIC),(DOMAIN-SUFFIX,akamaized.net)),REJECT
 
-[Rewrite]
-request if ${url} ~= /^https?:\/\/(?:[A-Za-z0-9-]+\.)*(?:bilivideo|acgvideo)\.com(?::[0-9]+)?\/upgcxcode\// then url.replace("https://${cdn}/upgcxcode/")
-request if ${url} ~= /^https?:\/\/upos-(?:hz|bstar1)-mirrorakam\.akamaized\.net(?::[0-9]+)?\/upgcxcode\// then url.replace("https://${cdn}/upgcxcode/")
+[Script]
+http-request ^https?:\/\/(?:[A-Za-z0-9-]+\.)*(?:bilivideo|acgvideo)\.com(?::[0-9]+)?\/upgcxcode\/ script-path=https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.request.js, tag=📺 BiliBili.Redirect.CCBStyle.upgcxcode, argument=[{cdn}]
+http-request ^https?:\/\/upos-(?:hz|bstar1)-mirrorakam\.akamaized\.net(?::[0-9]+)?\/upgcxcode\/ script-path=https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.request.js, tag=📺 BiliBili.Redirect.CCBStyle.akamaized, argument=[{cdn}]
 
 [MITM]
 hostname = *.bilivideo.com, *.acgvideo.com, upos-hz-mirrorakam.akamaized.net, upos-bstar1-mirrorakam.akamaized.net
