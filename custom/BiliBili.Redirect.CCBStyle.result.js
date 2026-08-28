@@ -72,24 +72,29 @@ function stateName(state) {
   }[state] || state || "未知";
 }
 
+function stageName(item) {
+  return item && item.stageName ? item.stageName : (item && item.stage === 2 ? "精测" : "初筛");
+}
+
 function line(item, index) {
-  const stage = item.stage === 2 ? "精测" : "初筛";
   const baseline = item.baseline ? " · 原始基线" : "";
-  return `${index + 1}. ${item.node} — ${Number(item.mbps || 0).toFixed(1)} Mbps (${item.region || "未知"} · ${stage}${baseline})`;
+  return `${index + 1}. ${item.node} — ${Number(item.mbps || 0).toFixed(1)} Mbps (${item.region || "未知"} · ${stageName(item)}${baseline})`;
 }
 
 function failureLine(item, index) {
-  const stage = item.stage === 2 ? "精测" : "初筛";
   const status = item.status ? ` HTTP ${item.status}` : "";
   const error = item.error ? ` · ${item.error}` : "";
-  return `F${index + 1}. ${item.node} — ${item.kind || "other"}${status} (${item.region || "未知"} · ${stage})${error}`;
+  return `F${index + 1}. ${item.node} — ${item.kind || "other"}${status} (${item.region || "未知"} · ${stageName(item)})${error}`;
 }
 
 function statsLines(stats) {
   if (!stats || typeof stats !== "object" || !stats.attempts) return [];
+  const phaseLine = stats.firstAttempts !== undefined || stats.retryAttempts !== undefined
+    ? `首测：${stats.firstOk || 0}/${stats.firstAttempts || 0}；重试：${stats.retryOk || 0}/${stats.retryAttempts || 0}`
+    : `初筛：${stats.stage1Ok || 0}/${stats.stage1Attempts || 0}；精测：${stats.stage2Ok || 0}/${stats.stage2Attempts || 0}`;
   return [
     `测速尝试：成功 ${stats.ok || 0}/${stats.attempts || 0}`,
-    `初筛：${stats.stage1Ok || 0}/${stats.stage1Attempts || 0}；精测：${stats.stage2Ok || 0}/${stats.stage2Attempts || 0}`,
+    phaseLine,
     `失败：DNS ${stats.dns || 0} · 超时 ${stats.timeout || 0} · HTTP ${stats.http || 0} · 其他 ${stats.other || 0}`,
   ];
 }
@@ -183,6 +188,7 @@ try {
         ? "最近结果：只有原始 CDN，无需测速，已静默直通"
         : `最近最快：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
       `来源：${sourceName(latest.source)}`,
+      latest.mode ? `测速模式：${latest.mode}` : null,
       latest.elapsedMs !== undefined ? `测速耗时：${(Number(latest.elapsedMs) / 1000).toFixed(1)} 秒` : null,
       ...statsLines(latest.stats),
       `记录时间：${formatTime(latest.at)}（${formatAge(latest.at)}）`,
