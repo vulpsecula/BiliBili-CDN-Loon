@@ -1,6 +1,7 @@
 const CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.v1";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const STALE_TEST_MS = 20 * 1000;
 
 function args() {
   if ($argument && typeof $argument === "object") return $argument;
@@ -126,15 +127,16 @@ try {
     const top = ranking.slice(0, 10);
     const body = [
       ...common,
-      `状态：可用缓存`,
+      "状态：可用缓存",
       `最快：${currentCache.best}`,
       `速度：${Number(currentCache.bestMbps || 0).toFixed(1)} Mbps`,
       `地区：${currentCache.bestRegion || "未知"}`,
       `来源：${sourceName(currentCache.source)}`,
+      currentCache.elapsedMs !== undefined ? `测速耗时：${(Number(currentCache.elapsedMs) / 1000).toFixed(1)} 秒` : null,
       `测速时间：${formatTime(currentCache.at)}（${formatAge(currentCache.at)}）`,
       "",
       ...top.map(line),
-    ].join("\n");
+    ].filter(Boolean).join("\n");
     const full = ranking.length ? ranking.map(line).join("\n") : body;
     notify(`${Number(currentCache.bestMbps || 0).toFixed(1)} Mbps · ${currentCache.bestRegion || "未知地区"}`, body, full);
     $done();
@@ -149,19 +151,27 @@ try {
     $done();
   } else if (status) {
     const sameNetwork = status.network === key;
+    const testStart = status.startedAt || status.at;
+    const testingAge = status.state === "testing" && testStart ? Date.now() - testStart : 0;
+    const staleTesting = sameNetwork && status.state === "testing" && testingAge > STALE_TEST_MS;
+    const shownState = staleTesting ? "测速可能已超时" : stateName(status.state);
     const body = [
       ...common,
-      `状态：${stateName(status.state)}${sameNetwork ? "" : "（最近其他网络）"}`,
+      `状态：${shownState}${sameNetwork ? "" : "（最近其他网络）"}`,
       `来源：${sourceName(status.source)}`,
-      `时间：${formatTime(status.at)}（${formatAge(status.at)}）`,
+      status.phase ? `阶段：${status.phase}` : null,
+      status.startedAt ? `开始：${formatTime(status.startedAt)}（${formatAge(status.startedAt)}）` : null,
+      `状态更新：${formatTime(status.at)}（${formatAge(status.at)}）`,
       status.sampleHost ? `测速样本：${status.sampleHost}` : null,
       status.selected ? `实际选择：${status.selected}` : null,
       status.bestMbps !== undefined ? `速度：${Number(status.bestMbps || 0).toFixed(1)} Mbps` : null,
       status.bestRegion ? `地区：${status.bestRegion}` : null,
+      status.elapsedMs !== undefined ? `耗时：${(Number(status.elapsedMs) / 1000).toFixed(1)} 秒` : null,
       status.message ? `说明：${status.message}` : null,
+      staleTesting ? "诊断：测速已超过 20 秒仍未结束，上一轮很可能被 Loon 脚本超时终止；新版 fallback 会在约 8–12 秒内硬结束。" : null,
       !sameNetwork ? "当前网络尚没有独立测速缓存。" : null,
     ].filter(Boolean).join("\n");
-    notify(stateName(status.state), body);
+    notify(shownState, body);
     $done();
   } else if (cache && cache.best) {
     const expired = typeof cache.at === "number" && Date.now() - cache.at > CACHE_TTL_MS;
