@@ -73,7 +73,10 @@ function stateName(state) {
 }
 
 function stageName(item) {
-  return item && item.stageName ? item.stageName : (item && item.stage === 2 ? "精测" : "初筛");
+  if (item && item.stageName) return item.stageName;
+  if (item && item.stage === 3) return "串行确认";
+  if (item && item.stage === 2) return "重试";
+  return "首测";
 }
 
 function line(item, index) {
@@ -89,24 +92,25 @@ function failureLine(item, index) {
 
 function statsLines(stats) {
   if (!stats || typeof stats !== "object" || !stats.attempts) return [];
-  const phaseLine = stats.firstAttempts !== undefined || stats.retryAttempts !== undefined
-    ? `首测：${stats.firstOk || 0}/${stats.firstAttempts || 0}；重试：${stats.retryOk || 0}/${stats.retryAttempts || 0}`
-    : `初筛：${stats.stage1Ok || 0}/${stats.stage1Attempts || 0}；精测：${stats.stage2Ok || 0}/${stats.stage2Attempts || 0}`;
+  if (stats.firstAttempts !== undefined || stats.retryAttempts !== undefined || stats.confirmAttempts !== undefined) {
+    return [
+      `测速尝试：成功 ${stats.ok || 0}/${stats.attempts || 0}`,
+      `首测：${stats.firstOk || 0}/${stats.firstAttempts || 0}；重试：${stats.retryOk || 0}/${stats.retryAttempts || 0}；串行确认：${stats.confirmOk || 0}/${stats.confirmAttempts || 0}`,
+      `失败：DNS ${stats.dns || 0} · 超时 ${stats.timeout || 0} · HTTP ${stats.http || 0} · 其他 ${stats.other || 0}`,
+    ];
+  }
   return [
     `测速尝试：成功 ${stats.ok || 0}/${stats.attempts || 0}`,
-    phaseLine,
+    `初筛：${stats.stage1Ok || 0}/${stats.stage1Attempts || 0}；精测：${stats.stage2Ok || 0}/${stats.stage2Attempts || 0}`,
     `失败：DNS ${stats.dns || 0} · 超时 ${stats.timeout || 0} · HTTP ${stats.http || 0} · 其他 ${stats.other || 0}`,
   ];
 }
 
 function validEntry(entry) {
   return Boolean(
-    entry &&
-    typeof entry === "object" &&
-    typeof entry.at === "number" &&
-    Date.now() - entry.at <= CACHE_TTL_MS &&
-    typeof entry.best === "string" &&
-    entry.best
+    entry && typeof entry === "object" &&
+    typeof entry.at === "number" && Date.now() - entry.at <= CACHE_TTL_MS &&
+    typeof entry.best === "string" && entry.best
   );
 }
 
@@ -161,7 +165,8 @@ try {
     `自动测速：${auto ? "已开启" : "已关闭"}`,
     `手动 CDN：${manualCdn}`,
     `当前网络：${key}`,
-  ];
+    status && status.selected ? `最近实际使用 CDN：${status.selected}` : null,
+  ].filter(Boolean);
 
   if (!auto) {
     const recent = familyEntries[0] && familyEntries[0].entry;
@@ -186,7 +191,7 @@ try {
       `最近 family：${latest.probeFamily || familyEntries[0].family}`,
       latest.mode === "single-candidate-passthrough"
         ? "最近结果：只有原始 CDN，无需测速，已静默直通"
-        : `最近最快：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
+        : `最近测速选中：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
       `来源：${sourceName(latest.source)}`,
       latest.mode ? `测速模式：${latest.mode}` : null,
       latest.elapsedMs !== undefined ? `测速耗时：${(Number(latest.elapsedMs) / 1000).toFixed(1)} 秒` : null,
@@ -201,12 +206,13 @@ try {
       "==== Family 缓存 ====",
       ...familyEntries.map(familySummary),
       "",
+      status && status.selected ? `==== 最近实际使用 CDN：${status.selected} ====` : null,
       `==== 最近测速：${latest.probeFamily || "unknown"} ====`,
       ...(ranking.length ? ranking.map(line) : ["无测速排名（单候选直通）"]),
       "",
       "==== 失败诊断 ====",
       ...(failures.length ? failures.map(failureLine) : ["无失败记录"]),
-    ].join("\n");
+    ].filter(Boolean).join("\n");
     console.log(full);
     notify(`${latest.probeFamily || "CDN"} · ${latest.best}`, body, full);
     $done();
@@ -238,7 +244,7 @@ try {
       status.probeFamily ? `当前 family：${status.probeFamily}` : null,
       status.startedAt ? `开始：${formatTime(status.startedAt)}（${formatAge(status.startedAt)}）` : null,
       `状态更新：${formatTime(status.at)}（${formatAge(status.at)}）`,
-      status.selected ? `实际选择：${status.selected}` : null,
+      status.selected ? `实际使用 CDN：${status.selected}` : null,
       status.bestMbps !== undefined ? `速度：${Number(status.bestMbps || 0).toFixed(1)} Mbps` : null,
       ...statsLines(status.stats),
       status.message ? `说明：${status.message}` : null,
