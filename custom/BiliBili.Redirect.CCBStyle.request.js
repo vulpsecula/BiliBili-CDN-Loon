@@ -4,7 +4,7 @@ const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 15000;
-const POOL_VERSION = 5;
+const POOL_VERSION = 6;
 const AUTO_HEADER = "X-CCB-Speedtest";
 
 const STAGE1_BYTES = 128 * 1024;
@@ -344,10 +344,17 @@ function sortResults(results) {
 
 function dedupeResults(stage1, stage2) {
   const map = new Map();
-  for (const item of stage1 || []) map.set(item.node, { ...item, stage: 1 });
-  for (const item of stage2 || []) map.set(item.node, { ...item, stage: 2 });
+  const keepSuccess = (item, stage) => {
+    if (!item || !item.ok || !(item.mbps > 0)) return;
+    const next = { ...item, stage };
+    const current = map.get(item.node);
+    if (!current || stage > current.stage || (stage === current.stage && next.mbps > current.mbps)) {
+      map.set(item.node, next);
+    }
+  };
+  for (const item of stage1 || []) keepSuccess(item, 1);
+  for (const item of stage2 || []) keepSuccess(item, 2);
   return [...map.values()]
-    .filter((item) => item && item.ok && item.mbps > 0)
     .sort((a, b) => b.stage - a.stage || b.mbps - a.mbps || a.elapsed - b.elapsed);
 }
 
@@ -485,7 +492,6 @@ function probeNode(item, samples, rangeBytes, timeout, deadlineAt) {
       "binary-mode": true,
       "auto-redirect": false,
       "auto-cookie": false,
-      alpn: "h2",
     }, effectiveTimeout, (error, response, data) => {
       const elapsed = Math.max(1, Date.now() - started);
       const bytes = binaryLength(data);
@@ -602,7 +608,7 @@ async function runAutoSpeedTest(sampleUrls, startedAt, cdn, requestHost) {
 
   const diagnostics = summarizeAttempts(stage1, stage2);
   const entry = {
-    version: 5,
+    version: 6,
     poolVersion: POOL_VERSION,
     at: Date.now(),
     network: networkKey(),
@@ -695,8 +701,8 @@ async function runAutoSpeedTest(sampleUrls, startedAt, cdn, requestHost) {
       sampleFamilies: sample ? [sample.signatureFamily] : [],
       requestHost,
       message: lock.staleAge > 0
-        ? `检测到上一轮测速超过 ${Math.round(lock.staleAge / 1000)} 秒未完成；本轮增加失败分类并强制精测深圳`
-        : "CDN fallback 只有一个 signed URL；将记录跨 family 兼容性、HTTP 状态和超时原因，并强制精测深圳/estgcos",
+        ? `检测到上一轮测速超过 ${Math.round(lock.staleAge / 1000)} 秒未完成；本轮使用默认 HTTP/1.1 探测并保留成功初筛结果`
+        : "CDN fallback 只有一个 signed URL；本轮使用 Loon 默认 HTTP/1.1 探测，记录跨 family 兼容性，并强制精测深圳/estgcos",
     });
     const entry = await runAutoSpeedTest([$request.url], startedAt, cdn, requestHost);
     releaseLock(lock.token);
