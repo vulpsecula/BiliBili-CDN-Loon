@@ -1,7 +1,14 @@
 const cdn = $argument?.cdn;
 
-if (typeof cdn !== "string" || cdn.length === 0) {
-	console.log("[BiliBili Redirect] 未收到 cdn 插件参数，保留原请求");
+const isSeparator =
+	typeof cdn === "string" && /^─{2,}.*─{2,}$/.test(cdn.trim());
+
+if (typeof cdn !== "string" || cdn.length === 0 || isSeparator) {
+	console.log(
+		isSeparator
+			? "[BiliBili Redirect] 选择了地区分隔项，保留原请求"
+			: "[BiliBili Redirect] 未收到 cdn 插件参数，保留原请求",
+	);
 	$done({});
 } else {
 	const url = new URL($request.url);
