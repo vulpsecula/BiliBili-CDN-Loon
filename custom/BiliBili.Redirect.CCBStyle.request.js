@@ -1,7 +1,8 @@
-const AUTO_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.v1";
-const AUTO_LOCK_KEY = "BiliBili.Redirect.CCBStyle.speed.lock.v1";
-const AUTO_LOCK_TTL_MS = 30 * 1000;
-const AUTO_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.v1";
+const LOCK_KEY = "BiliBili.Redirect.CCBStyle.speed.lock.v1";
+const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const LOCK_TTL_MS = 30 * 1000;
 const AUTO_HEADER = "X-CCB-Speedtest";
 const CCB_DATA_URLS = [
   "https://cdn.jsdelivr.net/gh/Kanda-Akihito-Kun/ccb@main/data/cdn.json",
@@ -37,6 +38,20 @@ const FALLBACK_REGIONS = {
   ],
 };
 
+function args() {
+  if ($argument && typeof $argument === "object") return $argument;
+  const out = {};
+  if (!$argument) return out;
+  for (const pair of String($argument).split("&")) {
+    const i = pair.indexOf("=");
+    if (i < 0) continue;
+    try {
+      out[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1));
+    } catch (_) {}
+  }
+  return out;
+}
+
 function getHeader(headers, wanted) {
   if (!headers || typeof headers !== "object") return undefined;
   const key = Object.keys(headers).find((name) => name.toLowerCase() === wanted.toLowerCase());
@@ -56,14 +71,10 @@ function rewriteRequest(cdn) {
   url.protocol = "https:";
   url.hostname = cdn;
   url.port = "";
-
   const headers = { ...$request.headers };
   for (const name of Object.keys(headers)) {
-    if (name.toLowerCase() === "host" || name.toLowerCase() === ":authority") {
-      headers[name] = cdn;
-    }
+    if (name.toLowerCase() === "host" || name.toLowerCase() === ":authority") headers[name] = cdn;
   }
-
   console.log(`[BiliBili Redirect] ${$request.url} -> ${url.toString()}`);
   $done({ url: url.toString(), headers });
 }
@@ -79,9 +90,9 @@ function networkKey() {
   }
 }
 
-function readCacheMap() {
+function readMap(key) {
   try {
-    const raw = $persistentStore.read(AUTO_CACHE_KEY);
+    const raw = $persistentStore.read(key);
     const parsed = raw ? JSON.parse(raw) : {};
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch (_) {
@@ -89,53 +100,57 @@ function readCacheMap() {
   }
 }
 
-function loadCachedRanking() {
+function writeMap(key, map, limit = 8) {
+  const entries = Object.entries(map)
+    .sort((a, b) => ((b[1] && b[1].at) || 0) - ((a[1] && a[1].at) || 0))
+    .slice(0, limit);
+  return $persistentStore.write(JSON.stringify(Object.fromEntries(entries)), key);
+}
+
+function writeStatus(state, extra = {}) {
   const key = networkKey();
-  const entry = readCacheMap()[key];
+  const map = readMap(STATUS_KEY);
+  map[key] = { state, at: Date.now(), network: key, source: "cdn-request", ...extra };
+  writeMap(STATUS_KEY, map, 8);
+}
+
+function loadCachedRanking() {
+  const entry = readMap(CACHE_KEY)[networkKey()];
   if (!entry || typeof entry !== "object") return null;
-  if (!(typeof entry.at === "number") || Date.now() - entry.at > AUTO_CACHE_TTL_MS) return null;
+  if (typeof entry.at !== "number" || Date.now() - entry.at > CACHE_TTL_MS) return null;
   if (typeof entry.best !== "string" || !entry.best) return null;
   return entry;
 }
 
 function saveRanking(entry) {
   const key = networkKey();
-  const map = readCacheMap();
+  const map = readMap(CACHE_KEY);
   map[key] = entry;
-  const entries = Object.entries(map)
-    .sort((a, b) => ((b[1] && b[1].at) || 0) - ((a[1] && a[1].at) || 0))
-    .slice(0, 8);
-  const trimmed = Object.fromEntries(entries);
-  $persistentStore.write(JSON.stringify(trimmed), AUTO_CACHE_KEY);
+  writeMap(CACHE_KEY, map, 8);
 }
 
-function acquireTestLock() {
+function acquireLock() {
   const key = networkKey();
   try {
-    const raw = $persistentStore.read(AUTO_LOCK_KEY);
-    const current = raw ? JSON.parse(raw) : null;
-    if (current && current.network === key && typeof current.at === "number" && Date.now() - current.at < AUTO_LOCK_TTL_MS) {
-      return null;
-    }
+    const current = JSON.parse($persistentStore.read(LOCK_KEY) || "null");
+    if (current && current.network === key && typeof current.at === "number" && Date.now() - current.at < LOCK_TTL_MS) return null;
   } catch (_) {}
-
   const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const lock = { network: key, at: Date.now(), token };
-  $persistentStore.write(JSON.stringify(lock), AUTO_LOCK_KEY);
+  $persistentStore.write(JSON.stringify({ network: key, at: Date.now(), token }), LOCK_KEY);
   try {
-    const check = JSON.parse($persistentStore.read(AUTO_LOCK_KEY) || "null");
-    return check && check.token === token ? token : null;
+    const current = JSON.parse($persistentStore.read(LOCK_KEY) || "null");
+    return current && current.token === token ? token : null;
   } catch (_) {
     return token;
   }
 }
 
-function releaseTestLock(token) {
+function releaseLock(token) {
   if (!token) return;
   try {
-    const current = JSON.parse($persistentStore.read(AUTO_LOCK_KEY) || "null");
+    const current = JSON.parse($persistentStore.read(LOCK_KEY) || "null");
     if (current && current.token === token) {
-      $persistentStore.write(JSON.stringify({ network: current.network, at: 0, token: "" }), AUTO_LOCK_KEY);
+      $persistentStore.write(JSON.stringify({ network: current.network, at: 0, token: "" }), LOCK_KEY);
     }
   } catch (_) {}
 }
@@ -143,22 +158,13 @@ function releaseTestLock(token) {
 function fetchJson(url, timeout = 2500) {
   return new Promise((resolve, reject) => {
     $httpClient.get(
-      {
-        url,
-        timeout,
-        "auto-cookie": false,
-        headers: { "Cache-Control": "no-cache" },
-      },
+      { url, timeout, "auto-cookie": false, headers: { "Cache-Control": "no-cache" } },
       (error, response, data) => {
         if (error || !response || response.status < 200 || response.status >= 300) {
           reject(new Error(error || `HTTP ${response && response.status}`));
           return;
         }
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(e);
-        }
+        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
       },
     );
   });
@@ -189,13 +195,11 @@ function isSafeProbeNode(node) {
 function regionPreferredNode(region, nodes) {
   const safe = nodes.filter(isSafeProbeNode);
   if (!safe.length) return null;
-
   const preferred = {
     "香港": ["cn-hk-eq-01-01.bilivideo.com"],
     "海外": ["upos-sz-mirrorcosov.bilivideo.com", "upos-sz-mirroraliov.bilivideo.com", "upos-sz-mirror08h.bilivideo.com"],
     "深圳": ["upos-sz-mirrorcos.bilivideo.com", "upos-sz-mirrorali.bilivideo.com", "upos-sz-mirrorhw.bilivideo.com"],
   }[region] || [];
-
   return preferred.find((node) => safe.includes(node)) || safe[0];
 }
 
@@ -209,32 +213,15 @@ function detectIsp(node) {
 function pickDiverseNodes(region, nodes, preferredNode, maxCount) {
   const safe = nodes.filter(isSafeProbeNode);
   if (!safe.length) return [];
-
   const ordered = [];
-  const push = (node) => {
-    if (node && safe.includes(node) && !ordered.includes(node)) ordered.push(node);
-  };
-
+  const push = (node) => { if (node && safe.includes(node) && !ordered.includes(node)) ordered.push(node); };
   push(preferredNode);
-
   if (region === "海外") {
-    [
-      "upos-sz-mirrorcosov.bilivideo.com",
-      "upos-sz-mirroraliov.bilivideo.com",
-      "upos-sz-mirror08h.bilivideo.com",
-    ].forEach(push);
+    ["upos-sz-mirrorcosov.bilivideo.com", "upos-sz-mirroraliov.bilivideo.com", "upos-sz-mirror08h.bilivideo.com"].forEach(push);
   } else if (region === "深圳") {
-    [
-      "upos-sz-mirrorcos.bilivideo.com",
-      "upos-sz-mirrorali.bilivideo.com",
-      "upos-sz-mirrorhw.bilivideo.com",
-      "upos-sz-mirror08c.bilivideo.com",
-    ].forEach(push);
+    ["upos-sz-mirrorcos.bilivideo.com", "upos-sz-mirrorali.bilivideo.com", "upos-sz-mirrorhw.bilivideo.com", "upos-sz-mirror08c.bilivideo.com"].forEach(push);
   }
-
-  for (const isp of ["ct", "cu", "cm", "other"]) {
-    push(safe.find((node) => detectIsp(node) === isp));
-  }
+  for (const isp of ["ct", "cu", "cm", "other"]) push(safe.find((node) => detectIsp(node) === isp));
   safe.forEach(push);
   return ordered.slice(0, maxCount);
 }
@@ -278,7 +265,6 @@ function probeNode(item, sampleUrl, rangeBytes, timeout) {
       resolve({ ...item, ok: false, mbps: 0, bytes: 0, elapsed: 0, status: 0 });
       return;
     }
-
     const started = Date.now();
     $httpClient.get(
       {
@@ -297,15 +283,7 @@ function probeNode(item, sampleUrl, rangeBytes, timeout) {
         const acceptedStatus = status === 206 || (status === 200 && bytes > 0 && bytes <= rangeBytes * 1.25);
         const ok = !error && acceptedStatus && bytes > 0;
         const mbps = ok ? (bytes * 8 / 1e6) / (elapsed / 1000) : 0;
-        resolve({
-          ...item,
-          ok,
-          mbps,
-          bytes,
-          elapsed,
-          status,
-          error: error ? String(error) : null,
-        });
+        resolve({ ...item, ok, mbps, bytes, elapsed, status, error: error ? String(error) : null });
       },
     );
   });
@@ -313,31 +291,19 @@ function probeNode(item, sampleUrl, rangeBytes, timeout) {
 
 function runConcurrent(items, limit, worker) {
   return new Promise((resolve) => {
-    if (!items.length) {
-      resolve([]);
-      return;
-    }
+    if (!items.length) { resolve([]); return; }
     const results = new Array(items.length);
     let cursor = 0;
     let active = 0;
-
     const pump = () => {
-      if (cursor >= items.length && active === 0) {
-        resolve(results.filter(Boolean));
-        return;
-      }
+      if (cursor >= items.length && active === 0) { resolve(results.filter(Boolean)); return; }
       while (active < limit && cursor < items.length) {
         const index = cursor++;
         active += 1;
         Promise.resolve(worker(items[index]))
           .then((result) => { results[index] = result; })
-          .catch((error) => {
-            results[index] = { ...items[index], ok: false, mbps: 0, error: String(error) };
-          })
-          .finally(() => {
-            active -= 1;
-            pump();
-          });
+          .catch((error) => { results[index] = { ...items[index], ok: false, mbps: 0, error: String(error) }; })
+          .finally(() => { active -= 1; pump(); });
       }
     };
     pump();
@@ -365,15 +331,9 @@ function formatResultLine(item, index) {
 }
 
 function notifyRanking(entry) {
-  const ranking = Array.isArray(entry.ranking) ? entry.ranking : [];
-  const top = ranking.slice(0, 5);
-  const body = top.length
-    ? top.map(formatResultLine).join("\n")
-    : `最快节点：${entry.best}`;
-  const full = ranking.length
-    ? ranking.map(formatResultLine).join("\n")
-    : `1. ${entry.best}`;
-
+  const top = (entry.ranking || []).slice(0, 5);
+  const body = top.length ? top.map(formatResultLine).join("\n") : `最快节点：${entry.best}`;
+  const full = (entry.ranking || []).length ? entry.ranking.map(formatResultLine).join("\n") : body;
   try {
     $notification.post(
       "📺 BiliBili CDN 自动测速完成",
@@ -389,62 +349,43 @@ function notifyRanking(entry) {
 async function runAutoSpeedTest(sampleUrl) {
   const data = await loadCcbData();
   const stage1Items = [];
-
   for (const [region, rawNodes] of Object.entries(data)) {
     const nodes = Array.isArray(rawNodes) ? rawNodes : [];
     const node = regionPreferredNode(region, nodes);
     if (node) stage1Items.push({ region, node });
   }
-
-  console.log(`[BiliBili Redirect] 自动测速第一阶段：${stage1Items.length} 个地区代表节点`);
-  const stage1 = await runConcurrent(
-    stage1Items,
-    STAGE1_CONCURRENCY,
-    (item) => probeNode(item, sampleUrl, STAGE1_BYTES, STAGE1_TIMEOUT_MS),
-  );
+  console.log(`[BiliBili Redirect] CDN fallback 第一阶段：${stage1Items.length} 个地区代表节点`);
+  const stage1 = await runConcurrent(stage1Items, STAGE1_CONCURRENCY, (item) => probeNode(item, sampleUrl, STAGE1_BYTES, STAGE1_TIMEOUT_MS));
   const stage1Ok = sortResults(stage1);
-
-  if (!stage1Ok.length) {
-    throw new Error("没有可用的第一阶段测速结果");
-  }
+  if (!stage1Ok.length) throw new Error("第一阶段没有可用测速结果");
 
   const topRegions = [];
   for (const item of stage1Ok) {
     if (!topRegions.includes(item.region)) topRegions.push(item.region);
     if (topRegions.length >= FINAL_REGION_COUNT) break;
   }
-
   const stage2Items = [];
   for (const region of topRegions) {
     const nodes = Array.isArray(data[region]) ? data[region] : [];
     const rep = stage1Ok.find((item) => item.region === region);
-    for (const node of pickDiverseNodes(region, nodes, rep && rep.node, FINAL_NODES_PER_REGION)) {
-      stage2Items.push({ region, node });
-    }
+    for (const node of pickDiverseNodes(region, nodes, rep && rep.node, FINAL_NODES_PER_REGION)) stage2Items.push({ region, node });
   }
-
-  console.log(`[BiliBili Redirect] 自动测速第二阶段：${topRegions.join(" / ")}，共 ${stage2Items.length} 个候选节点`);
-  const stage2 = await runConcurrent(
-    stage2Items,
-    STAGE2_CONCURRENCY,
-    (item) => probeNode(item, sampleUrl, STAGE2_BYTES, STAGE2_TIMEOUT_MS),
-  );
-
+  console.log(`[BiliBili Redirect] CDN fallback 第二阶段：${topRegions.join(" / ")}，共 ${stage2Items.length} 个候选节点`);
+  const stage2 = await runConcurrent(stage2Items, STAGE2_CONCURRENCY, (item) => probeNode(item, sampleUrl, STAGE2_BYTES, STAGE2_TIMEOUT_MS));
   const finalRanking = sortResults(stage2);
   const ranking = dedupeResults(stage1, stage2);
   const best = finalRanking[0] || stage1Ok[0];
   if (!best) throw new Error("测速未找到可用节点");
 
   const entry = {
-    version: 1,
+    version: 2,
     at: Date.now(),
     network: networkKey(),
+    source: "cdn-request",
     best: best.node,
     bestMbps: best.mbps,
     bestRegion: best.region,
-    sampleHost: (() => {
-      try { return new URL(sampleUrl).hostname; } catch (_) { return ""; }
-    })(),
+    sampleHost: (() => { try { return new URL(sampleUrl).hostname; } catch (_) { return ""; } })(),
     ranking: ranking.map((item) => ({
       node: item.node,
       region: item.region,
@@ -457,7 +398,6 @@ async function runAutoSpeedTest(sampleUrl) {
   };
   saveRanking(entry);
   notifyRanking(entry);
-  console.log(`[BiliBili Redirect] 自动测速最快节点：${entry.best} (${entry.bestMbps.toFixed(1)} Mbps)`);
   return entry;
 }
 
@@ -467,47 +407,71 @@ async function runAutoSpeedTest(sampleUrl) {
     return;
   }
 
-  const cdn = $argument && $argument.cdn;
-  const auto = isAutoEnabled($argument && $argument.auto);
+  const options = args();
+  const cdn = options.cdn;
+  const auto = isAutoEnabled(options.auto);
+  let requestHost = "";
+  try { requestHost = new URL($request.url).hostname; } catch (_) {}
 
   if (!auto) {
-    if (typeof cdn !== "string" || cdn.length === 0 || isSeparator(cdn)) {
-      console.log(
-        isSeparator(cdn)
-          ? "[BiliBili Redirect] 选择了地区分隔项，保留原请求"
-          : "[BiliBili Redirect] 未收到 cdn 插件参数，保留原请求",
-      );
+    if (typeof cdn !== "string" || !cdn || isSeparator(cdn)) {
+      writeStatus("error", { auto, cdn, message: "手动 CDN 无效或选中了地区分隔项", requestHost });
       $done({});
       return;
     }
+    writeStatus("manual", { auto, cdn, selected: cdn, requestHost });
     rewriteRequest(cdn);
     return;
   }
 
   const cached = loadCachedRanking();
   if (cached) {
-    console.log(`[BiliBili Redirect] 使用自动测速缓存：${cached.best} (${Number(cached.bestMbps || 0).toFixed(1)} Mbps)`);
+    writeStatus("cached", {
+      auto,
+      cdn,
+      selected: cached.best,
+      bestMbps: cached.bestMbps,
+      bestRegion: cached.bestRegion,
+      requestHost,
+    });
+    console.log(`[BiliBili Redirect] CDN fallback 使用测速缓存：${cached.best} (${Number(cached.bestMbps || 0).toFixed(1)} Mbps)`);
     rewriteRequest(cached.best);
     return;
   }
 
-  const lockToken = acquireTestLock();
+  const lockToken = acquireLock();
   if (!lockToken) {
-    console.log("[BiliBili Redirect] 已有测速任务运行，本请求临时使用手动回退节点");
-    if (typeof cdn === "string" && cdn.length > 0 && !isSeparator(cdn)) rewriteRequest(cdn);
+    writeStatus("testing", { auto, cdn, message: "已有测速任务运行，本请求临时使用手动 CDN", requestHost });
+    if (typeof cdn === "string" && cdn && !isSeparator(cdn)) rewriteRequest(cdn);
     else $done({});
     return;
   }
 
   try {
-    console.log("[BiliBili Redirect] 无有效测速缓存，开始真实视频分片吞吐测速");
-    const result = await runAutoSpeedTest($request.url);
-    releaseTestLock(lockToken);
-    rewriteRequest(result.best);
+    writeStatus("testing", {
+      auto,
+      cdn,
+      message: "未命中可用 playurl 缓存，已由 CDN 请求 fallback 开始两阶段测速",
+      sampleHost: requestHost,
+      requestHost,
+    });
+    const entry = await runAutoSpeedTest($request.url);
+    releaseLock(lockToken);
+    writeStatus("success", {
+      auto,
+      cdn,
+      selected: entry.best,
+      bestMbps: entry.bestMbps,
+      bestRegion: entry.bestRegion,
+      requestHost,
+    });
+    rewriteRequest(entry.best);
   } catch (error) {
-    releaseTestLock(lockToken);
-    console.log(`[BiliBili Redirect] 自动测速失败：${error}`);
-    if (typeof cdn === "string" && cdn.length > 0 && !isSeparator(cdn)) {
+    releaseLock(lockToken);
+    const message = String(error);
+    writeStatus("error", { auto, cdn, message, requestHost });
+    console.log(`[BiliBili Redirect] CDN fallback 自动测速失败：${message}`);
+    if (typeof cdn === "string" && cdn && !isSeparator(cdn)) {
       console.log(`[BiliBili Redirect] 回退到手动节点：${cdn}`);
       rewriteRequest(cdn);
     } else {
@@ -515,6 +479,7 @@ async function runAutoSpeedTest(sampleUrl) {
     }
   }
 })().catch((error) => {
-  console.log(`[BiliBili Redirect] 未处理异常：${error}`);
+  writeStatus("error", { message: `未处理异常: ${error}` });
+  console.log(`[BiliBili Redirect] CDN request 未处理异常：${error}`);
   $done({});
 });
