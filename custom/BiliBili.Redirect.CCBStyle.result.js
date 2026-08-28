@@ -17,7 +17,8 @@ function formatTime(timestamp) {
 }
 
 function line(item, index) {
-  return `${index + 1}. ${item.node} — ${Number(item.mbps || 0).toFixed(1)} Mbps (${item.region || "未知"})`;
+  const stage = item.stage === 2 ? "精测" : "初筛";
+  return `${index + 1}. ${item.node} — ${Number(item.mbps || 0).toFixed(1)} Mbps (${item.region || "未知"} · ${stage})`;
 }
 
 try {
