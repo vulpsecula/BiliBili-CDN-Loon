@@ -131,9 +131,15 @@ function latestLegacyEntry(key) {
 function familySummary(item) {
   const { family, entry } = item;
   if (entry.mode === "single-candidate-passthrough" || !(entry.bestMbps > 0)) {
-    return `${family}: ${entry.best}（单候选直通，${formatAge(entry.at)}）`;
+    return `${family} 自动选择：${entry.best}（单候选直通，${formatAge(entry.at)}）`;
   }
-  return `${family}: ${entry.best} · ${Number(entry.bestMbps).toFixed(1)} Mbps（${formatAge(entry.at)}）`;
+  return `${family} 自动选择：${entry.best} · ${Number(entry.bestMbps).toFixed(1)} Mbps（${formatAge(entry.at)}）`;
+}
+
+function actualRequestSummary(status) {
+  if (!status || !status.selected) return null;
+  const family = status.probeFamily || (status.auto === false ? "manual" : "unknown");
+  return `${family} → ${status.selected}`;
 }
 
 function notify(subtitle, body, clipboard) {
@@ -160,12 +166,13 @@ try {
   const familyEntries = familyEntriesForNetwork(key);
   const legacy = latestLegacyEntry(key);
   const status = readMap(STATUS_KEY)[key] || null;
+  const actualRequest = actualRequestSummary(status);
 
   const common = [
     `自动测速：${auto ? "已开启" : "已关闭"}`,
     `手动 CDN：${manualCdn}`,
     `当前网络：${key}`,
-    status && status.selected ? `最近实际使用 CDN：${status.selected}` : null,
+    actualRequest ? `最近实际请求：${actualRequest}` : null,
   ].filter(Boolean);
 
   if (!auto) {
@@ -188,9 +195,9 @@ try {
       `已缓存 family：${familyEntries.length}`,
       ...familyEntries.map(familySummary),
       "",
-      `最近 family：${latest.probeFamily || familyEntries[0].family}`,
+      `最近测速 family：${latest.probeFamily || familyEntries[0].family}`,
       latest.mode === "single-candidate-passthrough"
-        ? "最近结果：只有原始 CDN，无需测速，已静默直通"
+        ? "最近测速结果：只有原始 CDN，无需测速，已静默直通"
         : `最近测速选中：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
       `来源：${sourceName(latest.source)}`,
       latest.mode ? `测速模式：${latest.mode}` : null,
@@ -206,7 +213,7 @@ try {
       "==== Family 缓存 ====",
       ...familyEntries.map(familySummary),
       "",
-      status && status.selected ? `==== 最近实际使用 CDN：${status.selected} ====` : null,
+      actualRequest ? `==== 最近实际请求：${actualRequest} ====` : null,
       `==== 最近测速：${latest.probeFamily || "unknown"} ====`,
       ...(ranking.length ? ranking.map(line) : ["无测速排名（单候选直通）"]),
       "",
@@ -244,7 +251,7 @@ try {
       status.probeFamily ? `当前 family：${status.probeFamily}` : null,
       status.startedAt ? `开始：${formatTime(status.startedAt)}（${formatAge(status.startedAt)}）` : null,
       `状态更新：${formatTime(status.at)}（${formatAge(status.at)}）`,
-      status.selected ? `实际使用 CDN：${status.selected}` : null,
+      actualRequest ? `实际请求：${actualRequest}` : null,
       status.bestMbps !== undefined ? `速度：${Number(status.bestMbps || 0).toFixed(1)} Mbps` : null,
       ...statsLines(status.stats),
       status.message ? `说明：${status.message}` : null,
