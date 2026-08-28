@@ -135,7 +135,6 @@ function releaseTestLock(token) {
   try {
     const current = JSON.parse($persistentStore.read(AUTO_LOCK_KEY) || "null");
     if (current && current.token === token) {
-      // Loon has no per-key remove API, so expire the lock by overwriting it.
       $persistentStore.write(JSON.stringify({ network: current.network, at: 0, token: "" }), AUTO_LOCK_KEY);
     }
   } catch (_) {}
@@ -355,11 +354,14 @@ function dedupeResults(stage1, stage2) {
   const map = new Map();
   for (const item of stage1) map.set(item.node, { ...item, stage: 1 });
   for (const item of stage2) map.set(item.node, { ...item, stage: 2 });
-  return sortResults([...map.values()]);
+  return [...map.values()]
+    .filter((item) => item && item.ok && item.mbps > 0)
+    .sort((a, b) => b.stage - a.stage || b.mbps - a.mbps || a.elapsed - b.elapsed);
 }
 
 function formatResultLine(item, index) {
-  return `${index + 1}. ${item.node} — ${item.mbps.toFixed(1)} Mbps (${item.region})`;
+  const stage = item.stage === 2 ? "精测" : "初筛";
+  return `${index + 1}. ${item.node} — ${item.mbps.toFixed(1)} Mbps (${item.region} · ${stage})`;
 }
 
 function notifyRanking(entry) {
@@ -484,7 +486,7 @@ async function runAutoSpeedTest(sampleUrl) {
 
   const cached = loadCachedRanking();
   if (cached) {
-    console.log(`[BiliBili Redirect] 使用自动测速缓存：${cached.best} (${cached.bestMbps.toFixed(1)} Mbps)`);
+    console.log(`[BiliBili Redirect] 使用自动测速缓存：${cached.best} (${Number(cached.bestMbps || 0).toFixed(1)} Mbps)`);
     rewriteRequest(cached.best);
     return;
   }
