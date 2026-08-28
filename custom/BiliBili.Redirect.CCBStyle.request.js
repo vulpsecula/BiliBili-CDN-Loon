@@ -6,15 +6,19 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 16000;
-const ENGINE_VERSION = 8;
+const ENGINE_VERSION = 9;
 const AUTO_HEADER = "X-CCB-Speedtest";
 
-const STAGE1_BYTES = 128 * 1024;
-const STAGE1_TIMEOUT_MS = 4500;
-const STAGE1_CONCURRENCY = 3;
-const STAGE2_BYTES = 768 * 1024;
-const STAGE2_TIMEOUT_MS = 5000;
-const STAGE2_CONCURRENCY = 2;
+// Adapted from realzza/bilibili-accelerator's throughput-first probe design:
+// measure every small-pool candidate with the same payload size instead of
+// eliminating candidates with a short warm-up probe. Browser fetch can retain
+// partial bytes on abort; Loon's $httpClient cannot, so transient failures get
+// one low-concurrency retry with the same 768 KiB sample.
+const PROBE_BYTES = 768 * 1024;
+const PROBE_TIMEOUT_MS = 5000;
+const PROBE_CONCURRENCY = 3;
+const RETRY_TIMEOUT_MS = 6500;
+const RETRY_CONCURRENCY = 1;
 
 // CDN-request fallback has only one signed media URL, so only compare nodes
 // from the same CDN family. playurl-response remains responsible for broader
@@ -266,6 +270,12 @@ function failureKind(result) {
   return "other";
 }
 
+function shouldRetryProbe(result) {
+  if (!result || result.ok) return false;
+  const kind = failureKind(result);
+  return kind === "timeout" || kind === "dns" || kind === "other";
+}
+
 function candidateSet(sample) {
   const family = sample ? sample.signatureFamily : "unknown";
   const out = [];
@@ -347,30 +357,29 @@ function sortResults(results) {
     .sort((a, b) => b.mbps - a.mbps || a.elapsed - b.elapsed);
 }
 
-function dedupeResults(stage1, stage2) {
-  const map = new Map();
-  const keep = (item, stage) => {
-    if (!item || !item.ok || !(item.mbps > 0)) return;
-    const next = { ...item, stage };
-    const current = map.get(item.node);
-    if (!current || stage > current.stage || (stage === current.stage && next.mbps > current.mbps)) map.set(item.node, next);
-  };
-  for (const item of stage1 || []) keep(item, 1);
-  for (const item of stage2 || []) keep(item, 2);
-  return [...map.values()].sort((a, b) => b.stage - a.stage || b.mbps - a.mbps || a.elapsed - b.elapsed);
+function mergeProbeResults(firstPass, retries) {
+  const byNode = new Map();
+  for (const item of firstPass || []) byNode.set(item.node, { ...item, stage: 1, stageName: "首测" });
+  for (const item of retries || []) {
+    const current = byNode.get(item.node);
+    if (item.ok || !current) byNode.set(item.node, { ...item, stage: 2, stageName: "重试" });
+  }
+  return [...byNode.values()];
 }
 
-function summarizeAttempts(stage1, stage2) {
+function summarizeAttempts(firstPass, retries) {
   const attempts = [
-    ...(stage1 || []).map((item) => ({ ...item, stage: 1 })),
-    ...(stage2 || []).map((item) => ({ ...item, stage: 2 })),
+    ...(firstPass || []).map((item) => ({ ...item, stage: 1, stageName: "首测" })),
+    ...(retries || []).map((item) => ({ ...item, stage: 2, stageName: "重试" })),
   ];
   const stats = {
     attempts: attempts.length, ok: 0, failed: 0,
     dns: 0, timeout: 0, http: 0, empty: 0, budget: 0, other: 0,
     familyMatchedAttempts: 0, familyMatchedOk: 0,
-    stage1Attempts: (stage1 || []).length, stage1Ok: 0,
-    stage2Attempts: (stage2 || []).length, stage2Ok: 0,
+    stage1Attempts: (firstPass || []).length, stage1Ok: 0,
+    stage2Attempts: (retries || []).length, stage2Ok: 0,
+    firstAttempts: (firstPass || []).length, firstOk: 0,
+    retryAttempts: (retries || []).length, retryOk: 0,
   };
   const failures = [];
   for (const item of attempts) {
@@ -378,15 +387,15 @@ function summarizeAttempts(stage1, stage2) {
     if (item.ok) {
       stats.ok += 1;
       if (item.familyMatched) stats.familyMatchedOk += 1;
-      if (item.stage === 1) stats.stage1Ok += 1;
-      if (item.stage === 2) stats.stage2Ok += 1;
+      if (item.stage === 1) { stats.stage1Ok += 1; stats.firstOk += 1; }
+      if (item.stage === 2) { stats.stage2Ok += 1; stats.retryOk += 1; }
       continue;
     }
     stats.failed += 1;
     const kind = failureKind(item);
     stats[kind] = (stats[kind] || 0) + 1;
     failures.push({
-      node: item.node, region: item.region, stage: item.stage,
+      node: item.node, region: item.region, stage: item.stage, stageName: item.stageName,
       status: Number(item.status || 0),
       error: item.error ? String(item.error).slice(0, 160) : "",
       kind,
@@ -400,13 +409,12 @@ function summarizeAttempts(stage1, stage2) {
 }
 
 function formatResultLine(item, index) {
-  const stage = item.stage === 2 ? "精测" : "初筛";
+  const stage = item.stageName || (item.stage === 2 ? "重试" : "首测");
   const baseline = item.baseline ? " · 原始基线" : "";
   return `${index + 1}. ${item.node} — ${item.mbps.toFixed(1)} Mbps (${item.region} · ${stage}${baseline})`;
 }
 
 function shouldNotify(entry) {
-  // No notification when the original CDN remains best; nothing changed for the user.
   if (!entry || !entry.best || entry.best === entry.sampleHost) return false;
   const key = networkKey();
   const map = readMap(NOTIFY_KEY);
@@ -427,14 +435,14 @@ function notifyRanking(entry) {
   const body = [
     ...top.map(formatResultLine),
     "",
-    `family=${entry.probeFamily || "unknown"}；成功 ${stats.ok || 0}/${stats.attempts || 0}；DNS ${stats.dns || 0}；超时 ${stats.timeout || 0}；HTTP ${stats.http || 0}`,
+    `family=${entry.probeFamily || "unknown"}；首测 ${stats.firstOk || 0}/${stats.firstAttempts || 0}；重试 ${stats.retryOk || 0}/${stats.retryAttempts || 0}`,
   ].filter(Boolean).join("\n");
   const full = [
     ...(entry.ranking || []).map(formatResultLine),
     "",
     "---- 失败诊断 ----",
     ...(entry.failures || []).map((item, index) =>
-      `F${index + 1}. ${item.node} — ${item.kind}${item.status ? ` HTTP ${item.status}` : ""} (${item.region} · ${item.stage === 2 ? "精测" : "初筛"})${item.error ? ` · ${item.error}` : ""}`
+      `F${index + 1}. ${item.node} — ${item.kind}${item.status ? ` HTTP ${item.status}` : ""} (${item.region} · ${item.stageName || (item.stage === 2 ? "重试" : "首测")})${item.error ? ` · ${item.error}` : ""}`
     ),
   ].join("\n");
   try {
@@ -446,7 +454,7 @@ function notifyRanking(entry) {
 
 function savePassthrough(sample, requestHost) {
   const entry = {
-    version: 8,
+    version: 9,
     engineVersion: ENGINE_VERSION,
     mode: "single-candidate-passthrough",
     at: Date.now(),
@@ -460,7 +468,7 @@ function savePassthrough(sample, requestHost) {
     sampleCount: 1,
     sampleFamilies: [sample.signatureFamily],
     elapsedMs: 0,
-    stats: { attempts: 0, ok: 0, failed: 0 },
+    stats: { attempts: 0, ok: 0, failed: 0, firstAttempts: 0, firstOk: 0, retryAttempts: 0, retryOk: 0 },
     failures: [],
     ranking: [],
   };
@@ -474,55 +482,55 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
   if (!candidates.length) throw new Error(`family=${sample.signatureFamily} 没有可测速候选`);
 
   writeStatus("testing", {
-    auto: true, cdn, phase: "同 family 初筛", startedAt,
+    auto: true, cdn, phase: "同 family 全量吞吐测试", startedAt,
     sampleHost: requestHost, sampleCount: 1, sampleFamilies: [sample.signatureFamily],
     probeFamily: sample.signatureFamily, requestHost,
-    message: `fallback 单 signed URL：仅比较 ${sample.signatureFamily} family，共 ${candidates.length} 个候选；$httpClient 显式 DIRECT。`,
+    message: `参考 Bilibili Accelerator：${candidates.length} 个同 family 候选统一读取 768 KiB，不再用短初筛淘汰；$httpClient 显式 DIRECT。`,
   });
-  console.log(`[BiliBili Redirect] CDN fallback family 初筛：${sample.signatureFamily}，${candidates.length} 个候选，DIRECT`);
+  console.log(`[BiliBili Redirect] CDN fallback family 全量吞吐：${sample.signatureFamily}，${candidates.length} 个候选，768 KiB，DIRECT`);
 
-  const stage1 = await runConcurrent(
+  const firstPass = await runConcurrent(
     candidates,
-    STAGE1_CONCURRENCY,
-    (item) => probeNode(item, sample, STAGE1_BYTES, STAGE1_TIMEOUT_MS, deadlineAt),
+    PROBE_CONCURRENCY,
+    (item) => probeNode(item, sample, PROBE_BYTES, PROBE_TIMEOUT_MS, deadlineAt),
   );
-  const stage1Ok = sortResults(stage1);
-  if (!stage1Ok.length) {
-    const d = summarizeAttempts(stage1, []);
-    throw new Error(`family 初筛无可用结果：DNS ${d.stats.dns}，超时 ${d.stats.timeout}，HTTP ${d.stats.http}，其他 ${d.stats.other}`);
+
+  let retryItems = firstPass
+    .filter(shouldRetryProbe)
+    .map((item) => ({ region: item.region, node: item.node, baseline: Boolean(item.baseline) }));
+
+  // Retry the configured manual fallback first when it belongs to this family.
+  if (typeof cdn === "string" && cdn) {
+    retryItems = retryItems.sort((a, b) => Number(b.node === cdn) - Number(a.node === cdn));
   }
 
-  const stage2Items = stage1Ok.map((item) => ({
-    region: item.region,
-    node: item.node,
-    baseline: Boolean(item.baseline),
-  }));
-
-  writeStatus("testing", {
-    auto: true, cdn, phase: "同 family 精测", startedAt,
-    sampleHost: requestHost, sampleCount: 1, sampleFamilies: [sample.signatureFamily],
-    probeFamily: sample.signatureFamily, requestHost,
-    message: `初筛成功 ${stage1Ok.length}/${candidates.length}；精测 ${stage2Items.length} 个同 family 节点。`,
-  });
-  console.log(`[BiliBili Redirect] CDN fallback family 精测：${stage2Items.length} 个候选`);
-
-  let stage2 = [];
-  if (deadlineAt - Date.now() > 700) {
-    stage2 = await runConcurrent(
-      stage2Items,
-      STAGE2_CONCURRENCY,
-      (item) => probeNode(item, sample, STAGE2_BYTES, STAGE2_TIMEOUT_MS, deadlineAt),
+  let retries = [];
+  if (retryItems.length && deadlineAt - Date.now() > 800) {
+    writeStatus("testing", {
+      auto: true, cdn, phase: "瞬时失败重试", startedAt,
+      sampleHost: requestHost, sampleCount: 1, sampleFamilies: [sample.signatureFamily],
+      probeFamily: sample.signatureFamily, requestHost,
+      message: `首测 ${sortResults(firstPass).length}/${candidates.length} 成功；对 ${retryItems.length} 个 DNS/超时/连接异常节点低并发重试，手动 fallback 节点优先。`,
+    });
+    console.log(`[BiliBili Redirect] family=${sample.signatureFamily} 首测失败 ${retryItems.length} 个，开始低并发同尺寸重试`);
+    retries = await runConcurrent(
+      retryItems,
+      RETRY_CONCURRENCY,
+      (item) => probeNode(item, sample, PROBE_BYTES, RETRY_TIMEOUT_MS, deadlineAt),
     );
   }
 
-  const stage2Ok = sortResults(stage2);
-  const ranking = dedupeResults(stage1, stage2);
-  const best = stage2Ok[0] || stage1Ok[0];
-  const diagnostics = summarizeAttempts(stage1, stage2);
+  const merged = mergeProbeResults(firstPass, retries);
+  const ranking = sortResults(merged);
+  const diagnostics = summarizeAttempts(firstPass, retries);
+  if (!ranking.length) {
+    throw new Error(`family 全量测速无可用结果：DNS ${diagnostics.stats.dns}，超时 ${diagnostics.stats.timeout}，HTTP ${diagnostics.stats.http}，其他 ${diagnostics.stats.other}`);
+  }
+  const best = ranking[0];
   const entry = {
-    version: 8,
+    version: 9,
     engineVersion: ENGINE_VERSION,
-    mode: "family-focused-direct",
+    mode: "family-full-probe-retry",
     at: Date.now(),
     network: networkKey(),
     source: "cdn-request",
@@ -539,13 +547,14 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     ranking: ranking.map((item) => ({
       node: item.node, region: item.region, mbps: Number(item.mbps.toFixed(3)),
       elapsed: item.elapsed, bytes: item.bytes, status: item.status, stage: item.stage,
+      stageName: item.stageName,
       nodeFamily: item.nodeFamily, sampleHost: item.sampleHost, sampleFamily: item.sampleFamily,
       familyMatched: Boolean(item.familyMatched), baseline: Boolean(item.baseline),
     })),
   };
   saveRanking(entry);
   notifyRanking(entry);
-  console.log(`[BiliBili Redirect] family=${entry.probeFamily} 测速诊断：成功 ${entry.stats.ok}/${entry.stats.attempts}，DNS ${entry.stats.dns}，超时 ${entry.stats.timeout}，HTTP ${entry.stats.http}`);
+  console.log(`[BiliBili Redirect] family=${entry.probeFamily} 全量测速：首测 ${entry.stats.firstOk}/${entry.stats.firstAttempts}，重试 ${entry.stats.retryOk}/${entry.stats.retryAttempts}，最终可排名 ${entry.ranking.length}`);
   return entry;
 }
 
@@ -618,7 +627,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     writeStatus("testing", {
       auto, cdn, phase: "准备", startedAt, sampleHost: requestHost,
       sampleCount: 1, sampleFamilies: [family], probeFamily: family, requestHost,
-      message: "fallback 使用同 family 小池 + DIRECT；测速结果按网络与 CDN family 独立缓存。",
+      message: "fallback 采用 Accelerator 风格同尺寸全量吞吐测试；瞬时失败低并发重试，结果按网络与 CDN family 独立缓存。",
     });
     const entry = await runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost);
     releaseLock(lock.token);
@@ -626,7 +635,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       auto, cdn, selected: entry.best, bestMbps: entry.bestMbps, bestRegion: entry.bestRegion,
       elapsedMs: entry.elapsedMs, stats: entry.stats, probeFamily: entry.probeFamily,
       sampleCount: entry.sampleCount, sampleFamilies: entry.sampleFamilies, requestHost,
-      message: `同 family 测速完成并独立缓存 6 小时；成功 ${entry.stats.ok}/${entry.stats.attempts}`,
+      message: `同 family 全量测速完成并独立缓存 6 小时；首测 ${entry.stats.firstOk}/${entry.stats.firstAttempts}，重试 ${entry.stats.retryOk}/${entry.stats.retryAttempts}`,
     });
     rewriteRequest(entry.best);
   } catch (error) {
