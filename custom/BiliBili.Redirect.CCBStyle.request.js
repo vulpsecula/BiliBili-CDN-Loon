@@ -1,11 +1,12 @@
-const CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.v1";
-const LOCK_KEY = "BiliBili.Redirect.CCBStyle.speed.lock.v1";
+const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
+const LOCK_KEY = "BiliBili.Redirect.CCBStyle.speed.lock.v2";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
+const NOTIFY_KEY = "BiliBili.Redirect.CCBStyle.speed.notify.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 16000;
-const POOL_VERSION = 5;
-const ENGINE_VERSION = 7;
+const ENGINE_VERSION = 8;
 const AUTO_HEADER = "X-CCB-Speedtest";
 
 const STAGE1_BYTES = 128 * 1024;
@@ -15,9 +16,9 @@ const STAGE2_BYTES = 768 * 1024;
 const STAGE2_TIMEOUT_MS = 5000;
 const STAGE2_CONCURRENCY = 2;
 
-// CDN-request fallback only has one signed media URL. Do not compare unrelated
-// CDN families with that URL. The playurl-response script remains responsible
-// for broad multi-family testing when multiple signed URLs are available.
+// CDN-request fallback has only one signed media URL, so only compare nodes
+// from the same CDN family. playurl-response remains responsible for broader
+// multi-family testing when multiple signed URLs are available.
 const FAMILY_CANDIDATES = {
   cos: [
     { region: "深圳", node: "upos-sz-estgcos.bilivideo.com" },
@@ -142,20 +143,24 @@ function describeSample(raw) {
 }
 
 function loadCachedRanking(family) {
-  const entry = readMap(CACHE_KEY)[networkKey()];
+  const bucket = readMap(FAMILY_CACHE_KEY)[networkKey()];
+  if (!bucket || typeof bucket !== "object" || !bucket.families) return null;
+  const entry = bucket.families[family];
   if (!entry || typeof entry !== "object") return null;
-  if (entry.poolVersion !== POOL_VERSION || entry.engineVersion !== ENGINE_VERSION) return null;
+  if (entry.engineVersion !== ENGINE_VERSION) return null;
   if (typeof entry.at !== "number" || Date.now() - entry.at > CACHE_TTL_MS) return null;
   if (typeof entry.best !== "string" || !entry.best) return null;
-  if (family && entry.probeFamily && entry.probeFamily !== family) return null;
   return entry;
 }
 
 function saveRanking(entry) {
   const key = networkKey();
-  const map = readMap(CACHE_KEY);
-  map[key] = entry;
-  writeMap(CACHE_KEY, map, 8);
+  const map = readMap(FAMILY_CACHE_KEY);
+  const current = map[key] && typeof map[key] === "object" ? map[key] : {};
+  const families = current.families && typeof current.families === "object" ? current.families : {};
+  families[entry.probeFamily || "unknown"] = entry;
+  map[key] = { network: key, at: entry.at || Date.now(), families };
+  return writeMap(FAMILY_CACHE_KEY, map, 8);
 }
 
 function acquireLock() {
@@ -400,7 +405,23 @@ function formatResultLine(item, index) {
   return `${index + 1}. ${item.node} — ${item.mbps.toFixed(1)} Mbps (${item.region} · ${stage}${baseline})`;
 }
 
+function shouldNotify(entry) {
+  // No notification when the original CDN remains best; nothing changed for the user.
+  if (!entry || !entry.best || entry.best === entry.sampleHost) return false;
+  const key = networkKey();
+  const map = readMap(NOTIFY_KEY);
+  const last = map[key];
+  if (last && typeof last.at === "number" && Date.now() - last.at < NOTIFY_COOLDOWN_MS) return false;
+  map[key] = { at: Date.now(), family: entry.probeFamily, best: entry.best };
+  writeMap(NOTIFY_KEY, map, 8);
+  return true;
+}
+
 function notifyRanking(entry) {
+  if (!shouldNotify(entry)) {
+    console.log(`[BiliBili Redirect] family=${entry.probeFamily} 测速完成，通知已静默（原 CDN 最优或处于 5 分钟冷却期）`);
+    return;
+  }
   const top = (entry.ranking || []).slice(0, 5);
   const stats = entry.stats || {};
   const body = [
@@ -423,10 +444,33 @@ function notifyRanking(entry) {
   }
 }
 
-async function runAutoSpeedTest(sample, startedAt, cdn, requestHost) {
+function savePassthrough(sample, requestHost) {
+  const entry = {
+    version: 8,
+    engineVersion: ENGINE_VERSION,
+    mode: "single-candidate-passthrough",
+    at: Date.now(),
+    network: networkKey(),
+    source: "cdn-request",
+    best: sample.host,
+    bestMbps: 0,
+    bestRegion: "原始",
+    probeFamily: sample.signatureFamily,
+    sampleHost: requestHost,
+    sampleCount: 1,
+    sampleFamilies: [sample.signatureFamily],
+    elapsedMs: 0,
+    stats: { attempts: 0, ok: 0, failed: 0 },
+    failures: [],
+    ranking: [],
+  };
+  saveRanking(entry);
+  return entry;
+}
+
+async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost) {
   if (!sample) throw new Error("无法解析当前媒体 signed URL");
   const deadlineAt = startedAt + TEST_BUDGET_MS;
-  const candidates = candidateSet(sample);
   if (!candidates.length) throw new Error(`family=${sample.signatureFamily} 没有可测速候选`);
 
   writeStatus("testing", {
@@ -476,8 +520,7 @@ async function runAutoSpeedTest(sample, startedAt, cdn, requestHost) {
   const best = stage2Ok[0] || stage1Ok[0];
   const diagnostics = summarizeAttempts(stage1, stage2);
   const entry = {
-    version: 7,
-    poolVersion: POOL_VERSION,
+    version: 8,
     engineVersion: ENGINE_VERSION,
     mode: "family-focused-direct",
     at: Date.now(),
@@ -536,9 +579,29 @@ async function runAutoSpeedTest(sample, startedAt, cdn, requestHost) {
     writeStatus("cached", {
       auto, cdn, selected: cached.best, bestMbps: cached.bestMbps, bestRegion: cached.bestRegion,
       probeFamily: cached.probeFamily, requestHost,
+      message: `${family} family 命中独立 6 小时缓存，不再重复测速/通知。`,
     });
-    console.log(`[BiliBili Redirect] CDN fallback 使用 ${family} family 测速缓存：${cached.best} (${Number(cached.bestMbps || 0).toFixed(1)} Mbps)`);
+    console.log(`[BiliBili Redirect] CDN fallback 使用 ${family} family 独立缓存：${cached.best}${cached.bestMbps > 0 ? ` (${Number(cached.bestMbps).toFixed(1)} Mbps)` : ""}`);
     rewriteRequest(cached.best);
+    return;
+  }
+
+  if (!sample) {
+    writeStatus("error", { auto, cdn, message: "无法解析当前媒体 signed URL", requestHost });
+    if (typeof cdn === "string" && cdn && !isSeparator(cdn)) rewriteRequest(cdn);
+    else $done({});
+    return;
+  }
+
+  const candidates = candidateSet(sample);
+  if (candidates.length <= 1) {
+    const entry = savePassthrough(sample, requestHost);
+    writeStatus("cached", {
+      auto, cdn, selected: entry.best, probeFamily: family, requestHost,
+      message: `${family} family 只有原始 CDN，没有可比较候选；已静默缓存 6 小时，不执行测速也不发送通知。`,
+    });
+    console.log(`[BiliBili Redirect] family=${family} 只有原始 CDN，静默缓存并跳过测速`);
+    rewriteRequest(entry.best);
     return;
   }
 
@@ -554,17 +617,16 @@ async function runAutoSpeedTest(sample, startedAt, cdn, requestHost) {
   try {
     writeStatus("testing", {
       auto, cdn, phase: "准备", startedAt, sampleHost: requestHost,
-      sampleCount: sample ? 1 : 0, sampleFamilies: sample ? [family] : [],
-      probeFamily: family, requestHost,
-      message: "手动 A/B 已确认 Host-only 改写可正常播放；fallback 改为同 family 小池 + DIRECT + 更长建连窗口。",
+      sampleCount: 1, sampleFamilies: [family], probeFamily: family, requestHost,
+      message: "fallback 使用同 family 小池 + DIRECT；测速结果按网络与 CDN family 独立缓存。",
     });
-    const entry = await runAutoSpeedTest(sample, startedAt, cdn, requestHost);
+    const entry = await runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost);
     releaseLock(lock.token);
     writeStatus("success", {
       auto, cdn, selected: entry.best, bestMbps: entry.bestMbps, bestRegion: entry.bestRegion,
       elapsedMs: entry.elapsedMs, stats: entry.stats, probeFamily: entry.probeFamily,
       sampleCount: entry.sampleCount, sampleFamilies: entry.sampleFamilies, requestHost,
-      message: `同 family 测速在 ${(entry.elapsedMs / 1000).toFixed(1)} 秒内完成；成功 ${entry.stats.ok}/${entry.stats.attempts}`,
+      message: `同 family 测速完成并独立缓存 6 小时；成功 ${entry.stats.ok}/${entry.stats.attempts}`,
     });
     rewriteRequest(entry.best);
   } catch (error) {
