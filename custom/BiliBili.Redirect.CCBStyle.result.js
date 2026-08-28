@@ -1,8 +1,8 @@
 const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
-const LEGACY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.v1";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_TEST_MS = 22 * 1000;
+const ENGINE_VERSION = 11;
 
 function args() {
   if ($argument && typeof $argument === "object") return $argument;
@@ -92,23 +92,17 @@ function failureLine(item, index) {
 
 function statsLines(stats) {
   if (!stats || typeof stats !== "object" || !stats.attempts) return [];
-  if (stats.firstAttempts !== undefined || stats.retryAttempts !== undefined || stats.confirmAttempts !== undefined) {
-    return [
-      `测速尝试：成功 ${stats.ok || 0}/${stats.attempts || 0}`,
-      `首测：${stats.firstOk || 0}/${stats.firstAttempts || 0}；重试：${stats.retryOk || 0}/${stats.retryAttempts || 0}；串行确认：${stats.confirmOk || 0}/${stats.confirmAttempts || 0}`,
-      `失败：DNS ${stats.dns || 0} · 超时 ${stats.timeout || 0} · HTTP ${stats.http || 0} · 其他 ${stats.other || 0}`,
-    ];
-  }
   return [
     `测速尝试：成功 ${stats.ok || 0}/${stats.attempts || 0}`,
-    `初筛：${stats.stage1Ok || 0}/${stats.stage1Attempts || 0}；精测：${stats.stage2Ok || 0}/${stats.stage2Attempts || 0}`,
+    `首测：${stats.firstOk || 0}/${stats.firstAttempts || 0}；重试：${stats.retryOk || 0}/${stats.retryAttempts || 0}；串行确认：${stats.confirmOk || 0}/${stats.confirmAttempts || 0}`,
     `失败：DNS ${stats.dns || 0} · 超时 ${stats.timeout || 0} · HTTP ${stats.http || 0} · 其他 ${stats.other || 0}`,
   ];
 }
 
-function validEntry(entry) {
+function validCurrentEntry(entry) {
   return Boolean(
     entry && typeof entry === "object" &&
+    entry.engineVersion === ENGINE_VERSION &&
     typeof entry.at === "number" && Date.now() - entry.at <= CACHE_TTL_MS &&
     typeof entry.best === "string" && entry.best
   );
@@ -119,13 +113,8 @@ function familyEntriesForNetwork(key) {
   if (!bucket || typeof bucket !== "object" || !bucket.families) return [];
   return Object.entries(bucket.families)
     .map(([family, entry]) => ({ family, entry }))
-    .filter(({ entry }) => validEntry(entry))
+    .filter(({ entry }) => validCurrentEntry(entry))
     .sort((a, b) => b.entry.at - a.entry.at);
-}
-
-function latestLegacyEntry(key) {
-  const entry = readMap(LEGACY_CACHE_KEY)[key];
-  return validEntry(entry) ? entry : null;
 }
 
 function familySummary(item) {
@@ -164,7 +153,6 @@ try {
   const manualCdn = options.cdn || "未设置";
   const key = networkKey();
   const familyEntries = familyEntriesForNetwork(key);
-  const legacy = latestLegacyEntry(key);
   const status = readMap(STATUS_KEY)[key] || null;
   const actualRequest = actualRequestSummary(status);
 
@@ -222,21 +210,6 @@ try {
     ].filter(Boolean).join("\n");
     console.log(full);
     notify(`${latest.probeFamily || "CDN"} · ${latest.best}`, body, full);
-    $done();
-  } else if (legacy) {
-    const ranking = Array.isArray(legacy.ranking) ? legacy.ranking : [];
-    const body = [
-      ...common,
-      "状态：旧版/Playurl 缓存",
-      `最快：${legacy.best}`,
-      `速度：${Number(legacy.bestMbps || 0).toFixed(1)} Mbps`,
-      `来源：${sourceName(legacy.source)}`,
-      `测速时间：${formatTime(legacy.at)}（${formatAge(legacy.at)}）`,
-      "新 fallback 会按 CDN family 建立独立缓存。",
-      "",
-      ...ranking.slice(0, 10).map(line),
-    ].filter(Boolean).join("\n");
-    notify("旧版缓存", body);
     $done();
   } else if (status) {
     const testStart = status.startedAt || status.at;
