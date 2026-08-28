@@ -1,4 +1,5 @@
-const CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.v1";
+const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
+const LEGACY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.v1";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_TEST_MS = 22 * 1000;
@@ -40,12 +41,6 @@ function readMap(key) {
   }
 }
 
-function latestEntry(map) {
-  return Object.values(map || {})
-    .filter((item) => item && typeof item.at === "number")
-    .sort((a, b) => b.at - a.at)[0] || null;
-}
-
 function formatTime(timestamp) {
   if (!timestamp) return "未知";
   try { return new Date(timestamp).toLocaleString(); } catch (_) { return String(timestamp); }
@@ -80,28 +75,56 @@ function stateName(state) {
 function line(item, index) {
   const stage = item.stage === 2 ? "精测" : "初筛";
   const baseline = item.baseline ? " · 原始基线" : "";
-  const family = item.familyMatched === undefined ? "" : ` · ${item.familyMatched ? "同族" : "跨族"}`;
-  return `${index + 1}. ${item.node} — ${Number(item.mbps || 0).toFixed(1)} Mbps (${item.region || "未知"} · ${stage}${family}${baseline})`;
+  return `${index + 1}. ${item.node} — ${Number(item.mbps || 0).toFixed(1)} Mbps (${item.region || "未知"} · ${stage}${baseline})`;
 }
 
 function failureLine(item, index) {
   const stage = item.stage === 2 ? "精测" : "初筛";
   const status = item.status ? ` HTTP ${item.status}` : "";
-  const route = item.sampleFamily ? ` ${item.sampleFamily}→${item.nodeFamily || "?"}` : "";
   const error = item.error ? ` · ${item.error}` : "";
-  return `F${index + 1}. ${item.node} — ${item.kind || "other"}${status} (${item.region || "未知"} · ${stage}${route})${error}`;
+  return `F${index + 1}. ${item.node} — ${item.kind || "other"}${status} (${item.region || "未知"} · ${stage})${error}`;
 }
 
 function statsLines(stats) {
-  if (!stats || typeof stats !== "object") return [];
+  if (!stats || typeof stats !== "object" || !stats.attempts) return [];
   return [
     `测速尝试：成功 ${stats.ok || 0}/${stats.attempts || 0}`,
     `初筛：${stats.stage1Ok || 0}/${stats.stage1Attempts || 0}；精测：${stats.stage2Ok || 0}/${stats.stage2Attempts || 0}`,
-    `失败：DNS ${stats.dns || 0} · 超时 ${stats.timeout || 0} · HTTP ${stats.http || 0} · 空响应 ${stats.empty || 0} · 预算 ${stats.budget || 0} · 其他 ${stats.other || 0}`,
-    stats.familyMatchedAttempts !== undefined
-      ? `同 family：成功 ${stats.familyMatchedOk || 0}/${stats.familyMatchedAttempts || 0}`
-      : null,
-  ].filter(Boolean);
+    `失败：DNS ${stats.dns || 0} · 超时 ${stats.timeout || 0} · HTTP ${stats.http || 0} · 其他 ${stats.other || 0}`,
+  ];
+}
+
+function validEntry(entry) {
+  return Boolean(
+    entry &&
+    typeof entry === "object" &&
+    typeof entry.at === "number" &&
+    Date.now() - entry.at <= CACHE_TTL_MS &&
+    typeof entry.best === "string" &&
+    entry.best
+  );
+}
+
+function familyEntriesForNetwork(key) {
+  const bucket = readMap(FAMILY_CACHE_KEY)[key];
+  if (!bucket || typeof bucket !== "object" || !bucket.families) return [];
+  return Object.entries(bucket.families)
+    .map(([family, entry]) => ({ family, entry }))
+    .filter(({ entry }) => validEntry(entry))
+    .sort((a, b) => b.entry.at - a.entry.at);
+}
+
+function latestLegacyEntry(key) {
+  const entry = readMap(LEGACY_CACHE_KEY)[key];
+  return validEntry(entry) ? entry : null;
+}
+
+function familySummary(item) {
+  const { family, entry } = item;
+  if (entry.mode === "single-candidate-passthrough" || !(entry.bestMbps > 0)) {
+    return `${family}: ${entry.best}（单候选直通，${formatAge(entry.at)}）`;
+  }
+  return `${family}: ${entry.best} · ${Number(entry.bestMbps).toFixed(1)} Mbps（${formatAge(entry.at)}）`;
 }
 
 function notify(subtitle, body, clipboard) {
@@ -125,18 +148,9 @@ try {
   const auto = isAutoEnabled(options.auto);
   const manualCdn = options.cdn || "未设置";
   const key = networkKey();
-  const cacheMap = readMap(CACHE_KEY);
-  const statusMap = readMap(STATUS_KEY);
-  const currentCache = cacheMap[key] || null;
-  const currentStatus = statusMap[key] || null;
-  const recentCache = latestEntry(cacheMap);
-  const recentStatus = latestEntry(statusMap);
-  const cache = currentCache || recentCache;
-  const status = currentStatus || recentStatus;
-  const validCurrentCache =
-    currentCache &&
-    typeof currentCache.at === "number" &&
-    Date.now() - currentCache.at <= CACHE_TTL_MS;
+  const familyEntries = familyEntriesForNetwork(key);
+  const legacy = latestLegacyEntry(key);
+  const status = readMap(STATUS_KEY)[key] || null;
 
   const common = [
     `自动测速：${auto ? "已开启" : "已关闭"}`,
@@ -144,95 +158,93 @@ try {
     `当前网络：${key}`,
   ];
 
-  if (validCurrentCache && currentCache.best) {
-    const ranking = Array.isArray(currentCache.ranking) ? currentCache.ranking : [];
-    const failures = Array.isArray(currentCache.failures) ? currentCache.failures : [];
-    const sampleFamilies = Array.isArray(currentCache.sampleFamilies) ? currentCache.sampleFamilies : [];
+  if (!auto) {
+    const recent = familyEntries[0] && familyEntries[0].entry;
     const body = [
       ...common,
-      "状态：可用缓存",
-      `最快：${currentCache.best}`,
-      `速度：${Number(currentCache.bestMbps || 0).toFixed(1)} Mbps`,
-      `地区：${currentCache.bestRegion || "未知"}`,
-      `来源：${sourceName(currentCache.source)}`,
-      currentCache.mode ? `测速模式：${currentCache.mode}` : null,
-      currentCache.probeFamily ? `当前 family：${currentCache.probeFamily}` : null,
-      currentCache.elapsedMs !== undefined ? `测速耗时：${(Number(currentCache.elapsedMs) / 1000).toFixed(1)} 秒` : null,
-      currentCache.sampleCount !== undefined
-        ? `测速样本：${currentCache.sampleCount} 条${sampleFamilies.length ? `（${sampleFamilies.join(" / ")}）` : ""}`
-        : null,
-      ...statsLines(currentCache.stats),
-      `测速时间：${formatTime(currentCache.at)}（${formatAge(currentCache.at)}）`,
+      "状态：手动模式",
+      "自动测速关闭时始终使用上方手动 CDN。",
+      recent ? `最近自动测速：${recent.probeFamily || "unknown"} → ${recent.best}` : "最近自动测速：无",
+    ].join("\n");
+    notify("手动模式", body);
+    $done();
+  } else if (familyEntries.length) {
+    const latest = familyEntries[0].entry;
+    const ranking = Array.isArray(latest.ranking) ? latest.ranking : [];
+    const failures = Array.isArray(latest.failures) ? latest.failures : [];
+    const body = [
+      ...common,
+      "状态：按 CDN family 独立缓存",
+      `已缓存 family：${familyEntries.length}`,
+      ...familyEntries.map(familySummary),
       "",
+      `最近 family：${latest.probeFamily || familyEntries[0].family}`,
+      latest.mode === "single-candidate-passthrough"
+        ? "最近结果：只有原始 CDN，无需测速，已静默直通"
+        : `最近最快：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
+      `来源：${sourceName(latest.source)}`,
+      latest.elapsedMs !== undefined ? `测速耗时：${(Number(latest.elapsedMs) / 1000).toFixed(1)} 秒` : null,
+      ...statsLines(latest.stats),
+      `记录时间：${formatTime(latest.at)}（${formatAge(latest.at)}）`,
+      ranking.length ? "" : null,
       ...ranking.slice(0, 10).map(line),
-      failures.length ? `\n失败诊断已记录 ${failures.length} 条；完整列表已写入剪贴板/日志。` : null,
+      failures.length ? `\n失败诊断 ${failures.length} 条，完整列表已写入剪贴板/日志。` : null,
     ].filter(Boolean).join("\n");
 
     const full = [
-      "==== 成功排名 ====",
-      ...(ranking.length ? ranking.map(line) : ["无成功排名"]),
+      "==== Family 缓存 ====",
+      ...familyEntries.map(familySummary),
+      "",
+      `==== 最近测速：${latest.probeFamily || "unknown"} ====`,
+      ...(ranking.length ? ranking.map(line) : ["无测速排名（单候选直通）"]),
       "",
       "==== 失败诊断 ====",
       ...(failures.length ? failures.map(failureLine) : ["无失败记录"]),
     ].join("\n");
     console.log(full);
-    notify(`${Number(currentCache.bestMbps || 0).toFixed(1)} Mbps · ${currentCache.bestRegion || "未知地区"}`, body, full);
+    notify(`${latest.probeFamily || "CDN"} · ${latest.best}`, body, full);
     $done();
-  } else if (!auto) {
+  } else if (legacy) {
+    const ranking = Array.isArray(legacy.ranking) ? legacy.ranking : [];
     const body = [
       ...common,
-      "状态：手动模式",
-      "自动测速关闭时始终使用上方手动 CDN。",
-      cache && cache.best
-        ? `最近测速：${cache.best} · ${Number(cache.bestMbps || 0).toFixed(1)} Mbps（不会在手动模式使用）`
-        : "最近测速：无",
-    ].join("\n");
-    notify("手动模式", body);
+      "状态：旧版/Playurl 缓存",
+      `最快：${legacy.best}`,
+      `速度：${Number(legacy.bestMbps || 0).toFixed(1)} Mbps`,
+      `来源：${sourceName(legacy.source)}`,
+      `测速时间：${formatTime(legacy.at)}（${formatAge(legacy.at)}）`,
+      "新 fallback 会按 CDN family 建立独立缓存。",
+      "",
+      ...ranking.slice(0, 10).map(line),
+    ].filter(Boolean).join("\n");
+    notify("旧版缓存", body);
     $done();
   } else if (status) {
-    const sameNetwork = status.network === key;
     const testStart = status.startedAt || status.at;
     const testingAge = status.state === "testing" && testStart ? Date.now() - testStart : 0;
-    const staleTesting = sameNetwork && status.state === "testing" && testingAge > STALE_TEST_MS;
+    const staleTesting = status.state === "testing" && testingAge > STALE_TEST_MS;
     const shownState = staleTesting ? "测速可能已超时" : stateName(status.state);
     const body = [
       ...common,
-      `状态：${shownState}${sameNetwork ? "" : "（最近其他网络）"}`,
+      `状态：${shownState}`,
       `来源：${sourceName(status.source)}`,
       status.phase ? `阶段：${status.phase}` : null,
       status.probeFamily ? `当前 family：${status.probeFamily}` : null,
       status.startedAt ? `开始：${formatTime(status.startedAt)}（${formatAge(status.startedAt)}）` : null,
       `状态更新：${formatTime(status.at)}（${formatAge(status.at)}）`,
-      status.sampleHost ? `测速样本：${status.sampleHost}` : null,
       status.selected ? `实际选择：${status.selected}` : null,
       status.bestMbps !== undefined ? `速度：${Number(status.bestMbps || 0).toFixed(1)} Mbps` : null,
-      status.bestRegion ? `地区：${status.bestRegion}` : null,
-      status.elapsedMs !== undefined ? `耗时：${(Number(status.elapsedMs) / 1000).toFixed(1)} 秒` : null,
       ...statsLines(status.stats),
       status.message ? `说明：${status.message}` : null,
       staleTesting ? "诊断：本轮测速超过预期时间，可能被 Loon 脚本上限终止。" : null,
-      !sameNetwork ? "当前网络尚没有独立测速缓存。" : null,
     ].filter(Boolean).join("\n");
     notify(shownState, body);
-    $done();
-  } else if (cache && cache.best) {
-    const expired = typeof cache.at === "number" && Date.now() - cache.at > CACHE_TTL_MS;
-    const body = [
-      ...common,
-      "状态：当前网络没有可用缓存",
-      `最近记录：${cache.best} · ${Number(cache.bestMbps || 0).toFixed(1)} Mbps`,
-      `记录网络：${cache.network || "未知"}`,
-      `记录时间：${formatTime(cache.at)}（${expired ? "已过期" : formatAge(cache.at)}）`,
-      "请播放一个普通视频触发当前网络测速。",
-    ].join("\n");
-    notify("等待当前网络测速", body);
     $done();
   } else {
     const body = [
       ...common,
       "状态：未检测到测速触发",
-      "没有发现 playurl 响应或 CDN 请求写入的状态。",
-      "播放一个普通视频后再次运行这里即可看到测速状态。",
+      "播放一个普通视频后再次运行这里即可看到各 CDN family 的独立缓存。",
     ].join("\n");
     notify("等待触发", body);
     $done();
