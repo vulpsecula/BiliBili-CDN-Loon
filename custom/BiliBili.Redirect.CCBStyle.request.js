@@ -6,22 +6,22 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 16000;
-const ENGINE_VERSION = 10;
+const ENGINE_VERSION = 11;
 const AUTO_HEADER = "X-CCB-Speedtest";
 
 // Throughput-first probing, adapted from realzza/bilibili-accelerator:
 // every candidate in the small same-family pool gets the same 768 KiB sample.
 // Transient failures get one low-concurrency retry. If budget permits, the top
-// two are then measured again serially so the final decision is not distorted
-// by candidates competing for the same connection during the parallel pass.
+// two are then measured again serially with 512 KiB so the final decision is
+// less affected by candidates competing for the connection in the parallel pass.
 const PROBE_BYTES = 768 * 1024;
 const PROBE_TIMEOUT_MS = 5000;
 const PROBE_CONCURRENCY = 3;
 const RETRY_TIMEOUT_MS = 6500;
 const RETRY_CONCURRENCY = 1;
-const CONFIRM_BYTES = 768 * 1024;
-const CONFIRM_TIMEOUT_MS = 4500;
-const CONFIRM_MIN_BUDGET_MS = CONFIRM_TIMEOUT_MS * 2 + 500;
+const CONFIRM_BYTES = 512 * 1024;
+const CONFIRM_TIMEOUT_MS = 3200;
+const CONFIRM_MIN_BUDGET_MS = 7000;
 
 const FAMILY_CANDIDATES = {
   cos: [
@@ -454,7 +454,7 @@ function notifyRanking(entry) {
 
 function savePassthrough(sample, requestHost) {
   const entry = {
-    version: 10,
+    version: 11,
     engineVersion: ENGINE_VERSION,
     mode: "single-candidate-passthrough",
     at: Date.now(),
@@ -536,9 +536,9 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       auto: true, cdn, phase: "Top 2 串行确认", startedAt,
       sampleHost: requestHost, sampleCount: 1, sampleFamilies: [sample.signatureFamily],
       probeFamily: sample.signatureFamily, requestHost,
-      message: `并发首测 Top 2：${top2.map((item) => item.node).join(" / ")}；现在逐个读取 768 KiB，避免并发争抢影响最终排序。`,
+      message: `并发首测 Top 2：${top2.map((item) => item.node).join(" / ")}；现在逐个读取 512 KiB，避免并发争抢影响最终排序。`,
     });
-    console.log(`[BiliBili Redirect] family=${sample.signatureFamily} Top 2 串行确认：${top2.map((item) => item.node).join(" / ")}`);
+    console.log(`[BiliBili Redirect] family=${sample.signatureFamily} Top 2 串行确认：${top2.map((item) => item.node).join(" / ")}，每个 512 KiB`);
     confirms = await runConcurrent(
       top2,
       1,
@@ -556,13 +556,13 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       console.log(`[BiliBili Redirect] Top 2 串行确认仅成功 ${confirmOk.length}/2，保留全量首测/重试排序，避免单边确认造成偏差`);
     }
   } else if (ranking.length >= 2) {
-    console.log(`[BiliBili Redirect] 剩余测速预算不足，跳过 Top 2 串行确认`);
+    console.log(`[BiliBili Redirect] 剩余测速预算不足 7 秒，跳过 Top 2 串行确认`);
   }
 
   const best = ranking[0];
   const diagnostics = summarizeAttempts(firstPass, retries, confirms);
   const entry = {
-    version: 10,
+    version: 11,
     engineVersion: ENGINE_VERSION,
     mode: confirms.length === 2 && confirms.every((item) => item.ok)
       ? "family-full-probe-retry-top2-serial"
@@ -661,7 +661,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     writeStatus("testing", {
       auto, cdn, phase: "准备", startedAt, sampleHost: requestHost,
       sampleCount: 1, sampleFamilies: [family], probeFamily: family, requestHost,
-      message: "同 family 全量吞吐 + 瞬时失败重试；预算允许时 Top 2 串行确认。",
+      message: "同 family 全量吞吐 + 瞬时失败重试；剩余至少 7 秒时 Top 2 用 512 KiB 串行确认。",
     });
     const entry = await runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost);
     releaseLock(lockToken);
