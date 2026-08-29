@@ -23,5 +23,7 @@ Akamai 等只有原始单候选的 family 会静默直通，不执行无意义�
 
 JSON `playurl` response hook 不再维护第二套测速引擎：手动模式仍可提前改写 DASH/durl；自动模式只应用已经存在的有效 family 缓存，未缓存的 family 交给 request fallback 统一测速。
 
+如需在电脑上对完整 CCB 节点进行更长时间的持续带宽评估，可使用独立的[本地参考测速脚本](scripts/README.md)。该脚本仅用于离线比较，不是 Loon 插件的运行时依赖。
+
 > [!IMPORTANT]
 > 这是非官方 fork 的扩展，不隶属于 BiliUniverse、CCB、Bilibili Accelerator 或 Bilibili。不要与其他针对同一批视频请求的固定 CDN 重写同时启用。
