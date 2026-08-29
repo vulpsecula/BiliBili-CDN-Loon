@@ -2,7 +2,7 @@ const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_TEST_MS = 22 * 1000;
-const ENGINE_VERSION = 11;
+const ENGINE_VERSION = 12;
 
 function args() {
   if ($argument && typeof $argument === "object") return $argument;

@@ -6,7 +6,7 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 16000;
-const ENGINE_VERSION = 11;
+const ENGINE_VERSION = 12;
 const AUTO_HEADER = "X-CCB-Speedtest";
 
 // Throughput-first probing, adapted from realzza/bilibili-accelerator:
@@ -41,8 +41,6 @@ const FAMILY_CANDIDATES = {
   ],
   regional: [
     { region: "香港", node: "cn-hk-eq-01-01.bilivideo.com" },
-    { region: "广东", node: "cn-gddg-ct-01-10.bilivideo.com" },
-    { region: "上海", node: "cn-sh-ct-01-01.bilivideo.com" },
   ],
 };
 
