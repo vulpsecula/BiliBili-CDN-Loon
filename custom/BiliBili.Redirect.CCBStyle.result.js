@@ -2,7 +2,19 @@ const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_TEST_MS = 22 * 1000;
-const ENGINE_VERSION = 12;
+const ENGINE_VERSION = 13;
+// Keep these values in sync with FAMILY_CANDIDATES in the request script.
+const FAMILY_CANDIDATE_FINGERPRINTS = {
+  cos: "upos-sz-mirrorcosb.bilivideo.com|upos-sz-estgcos.bilivideo.com|upos-sz-mirrorcosov.bilivideo.com",
+  ali: "upos-sz-mirrorali.bilivideo.com|upos-sz-mirroraliov.bilivideo.com|upos-sz-mirroralib.bilivideo.com",
+  hw: "upos-sz-mirrorhw.bilivideo.com|upos-sz-estghw.bilivideo.com|upos-sz-mirrorhwo1.bilivideo.com",
+  "08": "upos-sz-mirror08ct.bilivideo.com|upos-sz-mirror08c.bilivideo.com|upos-sz-mirror08h.bilivideo.com",
+  regional: "cn-hk-eq-01-08.bilivideo.com|cn-sdjn-cm-02-04.bilivideo.com|cn-hbwh-fx-01-01.bilivideo.com",
+};
+
+function candidateFingerprint(family) {
+  return FAMILY_CANDIDATE_FINGERPRINTS[family] || "";
+}
 
 function args() {
   if ($argument && typeof $argument === "object") return $argument;
@@ -99,10 +111,11 @@ function statsLines(stats) {
   ];
 }
 
-function validCurrentEntry(entry) {
+function validCurrentEntry(family, entry) {
   return Boolean(
     entry && typeof entry === "object" &&
     entry.engineVersion === ENGINE_VERSION &&
+    entry.candidateFingerprint === candidateFingerprint(family) &&
     typeof entry.at === "number" && Date.now() - entry.at <= CACHE_TTL_MS &&
     typeof entry.best === "string" && entry.best
   );
@@ -113,7 +126,7 @@ function familyEntriesForNetwork(key) {
   if (!bucket || typeof bucket !== "object" || !bucket.families) return [];
   return Object.entries(bucket.families)
     .map(([family, entry]) => ({ family, entry }))
-    .filter(({ entry }) => validCurrentEntry(entry))
+    .filter(({ family, entry }) => validCurrentEntry(family, entry))
     .sort((a, b) => b.entry.at - a.entry.at);
 }
 
@@ -189,6 +202,9 @@ try {
         : `最近测速选中：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
       `来源：${sourceName(latest.source)}`,
       latest.mode ? `测速模式：${latest.mode}` : null,
+      latest.measurementProfile
+        ? `流量档位：${latest.measurementProfile}（首测 ${Math.round(Number(latest.probeBytes || 0) / 1024)} KiB；确认 ${Math.round(Number(latest.confirmBytes || 0) / 1024)} KiB）`
+        : null,
       latest.elapsedMs !== undefined ? `测速耗时：${(Number(latest.elapsedMs) / 1000).toFixed(1)} 秒` : null,
       ...statsLines(latest.stats),
       `记录时间：${formatTime(latest.at)}（${formatAge(latest.at)}）`,

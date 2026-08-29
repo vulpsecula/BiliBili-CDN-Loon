@@ -5,42 +5,48 @@ const NOTIFY_KEY = "BiliBili.Redirect.CCBStyle.speed.notify.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
-const TEST_BUDGET_MS = 16000;
-const ENGINE_VERSION = 12;
+const TEST_BUDGET_MS = 12000;
+const ENGINE_VERSION = 13;
 const AUTO_HEADER = "X-CCB-Speedtest";
 
-// Throughput-first probing, adapted from realzza/bilibili-accelerator:
-// every candidate in the small same-family pool gets the same 768 KiB sample.
-// Transient failures get one low-concurrency retry. If budget permits, the top
-// two are then measured again serially with 512 KiB so the final decision is
-// less affected by candidates competing for the connection in the parallel pass.
-const PROBE_BYTES = 768 * 1024;
-const PROBE_TIMEOUT_MS = 5000;
-const PROBE_CONCURRENCY = 3;
-const RETRY_TIMEOUT_MS = 6500;
+// Mobile-balanced probing: all candidates in the small same-family pool start
+// together so a fourth candidate never gets a quieter, later time slot. The
+// first pass warms connections and checks effective delivery; Top 2 then get a
+// larger serial confirmation. Wi-Fi and cellular use different traffic sizes.
+const PROBE_TIMEOUT_MS = 4000;
+const PROBE_CONCURRENCY = 4;
+const RETRY_TIMEOUT_MS = 4000;
 const RETRY_CONCURRENCY = 1;
-const CONFIRM_BYTES = 512 * 1024;
-const CONFIRM_TIMEOUT_MS = 3200;
-const CONFIRM_MIN_BUDGET_MS = 7000;
+const CONFIRM_TIMEOUT_MS = 3500;
+const CONFIRM_MIN_BUDGET_MS = 7200;
+const WIFI_PROFILE = { name: "wifi", probeBytes: 512 * 1024, confirmBytes: 1024 * 1024 };
+const CELLULAR_PROFILE = { name: "cellular", probeBytes: 384 * 1024, confirmBytes: 768 * 1024 };
 
 const FAMILY_CANDIDATES = {
   cos: [
+    { region: "深圳", node: "upos-sz-mirrorcosb.bilivideo.com" },
     { region: "深圳", node: "upos-sz-estgcos.bilivideo.com" },
-    { region: "深圳", node: "upos-sz-mirrorcos.bilivideo.com" },
     { region: "海外", node: "upos-sz-mirrorcosov.bilivideo.com" },
   ],
   ali: [
     { region: "深圳", node: "upos-sz-mirrorali.bilivideo.com" },
     { region: "海外", node: "upos-sz-mirroraliov.bilivideo.com" },
+    { region: "深圳", node: "upos-sz-mirroralib.bilivideo.com" },
   ],
   hw: [
     { region: "深圳", node: "upos-sz-mirrorhw.bilivideo.com" },
+    { region: "深圳", node: "upos-sz-estghw.bilivideo.com" },
+    { region: "深圳", node: "upos-sz-mirrorhwo1.bilivideo.com" },
   ],
   "08": [
+    { region: "深圳", node: "upos-sz-mirror08ct.bilivideo.com" },
+    { region: "深圳", node: "upos-sz-mirror08c.bilivideo.com" },
     { region: "海外", node: "upos-sz-mirror08h.bilivideo.com" },
   ],
   regional: [
-    { region: "香港", node: "cn-hk-eq-01-01.bilivideo.com" },
+    { region: "香港", node: "cn-hk-eq-01-08.bilivideo.com" },
+    { region: "山东", node: "cn-sdjn-cm-02-04.bilivideo.com" },
+    { region: "湖北", node: "cn-hbwh-fx-01-01.bilivideo.com" },
   ],
 };
 
@@ -72,15 +78,30 @@ function getHeader(headers, wanted) {
   return key ? headers[key] : undefined;
 }
 
-function networkKey() {
+function runtimeConfig() {
   try {
     const config = JSON.parse($config.getConfig());
-    const ssid = config && config.ssid ? String(config.ssid) : "cellular-or-unknown";
-    const mode = config && config.running_model !== undefined ? String(config.running_model) : "unknown";
-    return `${ssid}|mode=${mode}`;
+    return config && typeof config === "object" ? config : {};
   } catch (_) {
-    return "unknown";
+    return {};
   }
+}
+
+function networkKey() {
+  const config = runtimeConfig();
+  const ssid = config.ssid ? String(config.ssid) : "cellular-or-unknown";
+  const mode = config.running_model !== undefined ? String(config.running_model) : "unknown";
+  return `${ssid}|mode=${mode}`;
+}
+
+function measurementProfile() {
+  const ssid = String(runtimeConfig().ssid || "").trim().toLowerCase();
+  const cellular = !ssid || ssid === "cellular" || ssid.includes("蜂窝") || ssid.includes("mobile");
+  return cellular ? CELLULAR_PROFILE : WIFI_PROFILE;
+}
+
+function candidateFingerprint(family) {
+  return (FAMILY_CANDIDATES[family] || []).map((item) => item.node).join("|");
 }
 
 function readMap(key) {
@@ -152,6 +173,7 @@ function loadCachedRanking(family) {
   const entry = bucket.families[family];
   if (!entry || typeof entry !== "object") return null;
   if (entry.engineVersion !== ENGINE_VERSION) return null;
+  if (entry.candidateFingerprint !== candidateFingerprint(family)) return null;
   if (typeof entry.at !== "number" || Date.now() - entry.at > CACHE_TTL_MS) return null;
   if (typeof entry.best !== "string" || !entry.best) return null;
   return entry;
@@ -322,7 +344,10 @@ function probeNode(item, sample, rangeBytes, timeout, deadlineAt) {
       const elapsed = Math.max(1, Date.now() - started);
       const bytes = binaryLength(data);
       const status = response && response.status ? response.status : 0;
-      const acceptedStatus = status === 206 || (status === 200 && bytes > 0 && bytes <= rangeBytes * 1.25);
+      // Loon buffers the complete response before invoking this callback.
+      // Only 206 proves that the CDN respected our bounded Range request;
+      // accepting 200 could select a node that downloaded an uncontrolled body.
+      const acceptedStatus = status === 206;
       const ok = !error && acceptedStatus && bytes > 0;
       const mbps = ok ? (bytes * 8 / 1e6) / (elapsed / 1000) : 0;
       resolve({ ...base, ok, mbps, bytes, elapsed, status, error: error ? String(error) : null });
@@ -365,6 +390,54 @@ function mergeProbeResults(firstPass, retries) {
     if (item.ok || !current) byNode.set(item.node, { ...item, stage: 2, stageName: "重试" });
   }
   return [...byNode.values()];
+}
+
+function sortMergedResults(results) {
+  return (results || [])
+    .filter((item) => item && item.ok && item.mbps > 0)
+    .sort((a, b) => {
+      const retryOrder = Number(a.stage === 2) - Number(b.stage === 2);
+      return retryOrder || b.mbps - a.mbps || a.elapsed - b.elapsed;
+    });
+}
+
+function applyConfirmationRanking(ranking, confirms) {
+  if (!confirms || !confirms.length) return ranking;
+  const byNode = new Map((ranking || []).map((item) => [item.node, item]));
+  const attempted = new Set();
+  const confirmed = [];
+  const failed = [];
+
+  for (const result of confirms) {
+    attempted.add(result.node);
+    const first = byNode.get(result.node);
+    if (!first) continue;
+    if (result.ok && result.mbps > 0) {
+      const scoreMbps = 0.7 * result.mbps + 0.3 * first.mbps;
+      confirmed.push({
+        ...result,
+        stage: 3,
+        stageName: "串行确认",
+        firstMbps: first.mbps,
+        confirmMbps: result.mbps,
+        scoreMbps,
+      });
+    } else {
+      failed.push({
+        ...first,
+        stage: 3,
+        stageName: "确认失败，降级",
+        confirmFailed: true,
+        confirmStatus: Number(result.status || 0),
+        confirmError: result.error ? String(result.error) : "",
+      });
+    }
+  }
+
+  confirmed.sort((a, b) => b.scoreMbps - a.scoreMbps || b.confirmMbps - a.confirmMbps);
+  const unconfirmed = (ranking || []).filter((item) => !attempted.has(item.node));
+  if (!confirmed.length && !unconfirmed.length) return [];
+  return [...confirmed, ...unconfirmed, ...failed];
 }
 
 function summarizeAttempts(firstPass, retries, confirms) {
@@ -451,6 +524,7 @@ function notifyRanking(entry) {
 }
 
 function savePassthrough(sample, requestHost) {
+  const profile = measurementProfile();
   const entry = {
     version: 11,
     engineVersion: ENGINE_VERSION,
@@ -462,6 +536,8 @@ function savePassthrough(sample, requestHost) {
     bestMbps: 0,
     bestRegion: "原始",
     probeFamily: sample.signatureFamily,
+    candidateFingerprint: candidateFingerprint(sample.signatureFamily),
+    measurementProfile: profile.name,
     sampleHost: requestHost,
     sampleCount: 1,
     sampleFamilies: [sample.signatureFamily],
@@ -477,25 +553,29 @@ function savePassthrough(sample, requestHost) {
 async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost) {
   if (!sample) throw new Error("无法解析当前媒体 signed URL");
   const deadlineAt = startedAt + TEST_BUDGET_MS;
+  const profile = measurementProfile();
   if (!candidates.length) throw new Error(`family=${sample.signatureFamily} 没有可测速候选`);
 
   writeStatus("testing", {
     auto: true, cdn, phase: "同 family 全量吞吐测试", startedAt,
     sampleHost: requestHost, sampleCount: 1, sampleFamilies: [sample.signatureFamily],
     probeFamily: sample.signatureFamily, requestHost,
-    message: `${candidates.length} 个同 family 候选统一读取 768 KiB；瞬时失败可重试；预算允许时 Top 2 再串行确认。`,
+    message: `${candidates.length} 个同 family 候选同时读取 ${profile.probeBytes / 1024} KiB；成功不足两个时才重试；预算允许时 Top 2 串行确认 ${profile.confirmBytes / 1024} KiB。`,
   });
-  console.log(`[BiliBili Redirect] CDN fallback family 全量吞吐：${sample.signatureFamily}，${candidates.length} 个候选，768 KiB，DIRECT`);
+  console.log(`[BiliBili Redirect] CDN fallback family 移动端吞吐：${sample.signatureFamily}，${candidates.length} 个候选，${profile.probeBytes / 1024} KiB，${profile.name}，DIRECT`);
 
   const firstPass = await runConcurrent(
     candidates,
     PROBE_CONCURRENCY,
-    (item) => probeNode(item, sample, PROBE_BYTES, PROBE_TIMEOUT_MS, deadlineAt),
+    (item) => probeNode(item, sample, profile.probeBytes, PROBE_TIMEOUT_MS, deadlineAt),
   );
 
-  let retryItems = firstPass
-    .filter(shouldRetryProbe)
-    .map((item) => ({ region: item.region, node: item.node, baseline: Boolean(item.baseline) }));
+  const firstRanking = sortResults(firstPass);
+  let retryItems = firstRanking.length < 2
+    ? firstPass
+      .filter(shouldRetryProbe)
+      .map((item) => ({ region: item.region, node: item.node, baseline: Boolean(item.baseline) }))
+    : [];
   if (typeof cdn === "string" && cdn) {
     retryItems = retryItems.sort((a, b) => Number(b.node === cdn) - Number(a.node === cdn));
   }
@@ -506,18 +586,20 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       auto: true, cdn, phase: "瞬时失败重试", startedAt,
       sampleHost: requestHost, sampleCount: 1, sampleFamilies: [sample.signatureFamily],
       probeFamily: sample.signatureFamily, requestHost,
-      message: `首测 ${sortResults(firstPass).length}/${candidates.length} 成功；对 ${retryItems.length} 个瞬时失败节点低并发重试。`,
+      message: `首测仅 ${firstRanking.length}/${candidates.length} 成功；对 ${retryItems.length} 个瞬时失败节点低并发重试。`,
     });
     console.log(`[BiliBili Redirect] family=${sample.signatureFamily} 首测失败 ${retryItems.length} 个，开始低并发同尺寸重试`);
     retries = await runConcurrent(
       retryItems,
       RETRY_CONCURRENCY,
-      (item) => probeNode(item, sample, PROBE_BYTES, RETRY_TIMEOUT_MS, deadlineAt),
+      (item) => probeNode(item, sample, profile.probeBytes, RETRY_TIMEOUT_MS, deadlineAt),
     );
+  } else if (firstRanking.length >= 2 && firstPass.some((item) => !item.ok)) {
+    console.log(`[BiliBili Redirect] 首测已有 ${firstRanking.length} 个成功节点，跳过失败重试，将预算留给 Top 2 串行确认`);
   }
 
   const merged = mergeProbeResults(firstPass, retries);
-  let ranking = sortResults(merged);
+  let ranking = sortMergedResults(merged);
   if (!ranking.length) {
     const diagnostics = summarizeAttempts(firstPass, retries, []);
     throw new Error(`family 全量测速无可用结果：DNS ${diagnostics.stats.dns}，超时 ${diagnostics.stats.timeout}，HTTP ${diagnostics.stats.http}，其他 ${diagnostics.stats.other}`);
@@ -534,25 +616,18 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       auto: true, cdn, phase: "Top 2 串行确认", startedAt,
       sampleHost: requestHost, sampleCount: 1, sampleFamilies: [sample.signatureFamily],
       probeFamily: sample.signatureFamily, requestHost,
-      message: `并发首测 Top 2：${top2.map((item) => item.node).join(" / ")}；现在逐个读取 512 KiB，避免并发争抢影响最终排序。`,
+      message: `并发首测 Top 2：${top2.map((item) => item.node).join(" / ")}；现在逐个读取 ${profile.confirmBytes / 1024} KiB，确认成功节点优先。`,
     });
-    console.log(`[BiliBili Redirect] family=${sample.signatureFamily} Top 2 串行确认：${top2.map((item) => item.node).join(" / ")}，每个 512 KiB`);
+    console.log(`[BiliBili Redirect] family=${sample.signatureFamily} Top 2 串行确认：${top2.map((item) => item.node).join(" / ")}，每个 ${profile.confirmBytes / 1024} KiB`);
     confirms = await runConcurrent(
       top2,
       1,
-      (item) => probeNode(item, sample, CONFIRM_BYTES, CONFIRM_TIMEOUT_MS, deadlineAt),
+      (item) => probeNode(item, sample, profile.confirmBytes, CONFIRM_TIMEOUT_MS, deadlineAt),
     );
     const confirmOk = sortResults(confirms);
-    if (confirmOk.length === 2) {
-      const confirmedNodes = new Set(confirmOk.map((item) => item.node));
-      const tail = ranking.filter((item) => !confirmedNodes.has(item.node));
-      ranking = [
-        ...confirmOk.map((item) => ({ ...item, stage: 3, stageName: "串行确认" })),
-        ...tail,
-      ];
-    } else {
-      console.log(`[BiliBili Redirect] Top 2 串行确认仅成功 ${confirmOk.length}/2，保留全量首测/重试排序，避免单边确认造成偏差`);
-    }
+    ranking = applyConfirmationRanking(ranking, confirms);
+    if (!ranking.length) throw new Error("Top 2 串行确认全部失败且没有可用后备节点");
+    if (confirmOk.length < 2) console.log(`[BiliBili Redirect] Top 2 串行确认仅成功 ${confirmOk.length}/2；确认成功节点优先，确认失败节点降级`);
   } else if (ranking.length >= 2) {
     console.log(`[BiliBili Redirect] 剩余测速预算不足 7 秒，跳过 Top 2 串行确认`);
   }
@@ -562,16 +637,21 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
   const entry = {
     version: 11,
     engineVersion: ENGINE_VERSION,
-    mode: confirms.length === 2 && confirms.every((item) => item.ok)
-      ? "family-full-probe-retry-top2-serial"
-      : "family-full-probe-retry",
+    mode: confirms.length
+      ? "mobile-family-probe-top2-confirm"
+      : "mobile-family-probe",
     at: Date.now(),
     network: networkKey(),
     source: "cdn-request",
     best: best.node,
     bestMbps: best.mbps,
+    bestScoreMbps: best.scoreMbps || best.mbps,
     bestRegion: best.region,
     probeFamily: sample.signatureFamily,
+    candidateFingerprint: candidateFingerprint(sample.signatureFamily),
+    measurementProfile: profile.name,
+    probeBytes: profile.probeBytes,
+    confirmBytes: profile.confirmBytes,
     sampleHost: requestHost,
     sampleCount: 1,
     sampleFamilies: [sample.signatureFamily],
@@ -582,6 +662,12 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       node: item.node, region: item.region, mbps: Number(item.mbps.toFixed(3)),
       elapsed: item.elapsed, bytes: item.bytes, status: item.status, stage: item.stage,
       stageName: item.stageName,
+      firstMbps: item.firstMbps ? Number(item.firstMbps.toFixed(3)) : undefined,
+      confirmMbps: item.confirmMbps ? Number(item.confirmMbps.toFixed(3)) : undefined,
+      scoreMbps: item.scoreMbps ? Number(item.scoreMbps.toFixed(3)) : undefined,
+      confirmFailed: Boolean(item.confirmFailed),
+      confirmStatus: Number(item.confirmStatus || 0),
+      confirmError: item.confirmError || "",
       nodeFamily: item.nodeFamily, sampleHost: item.sampleHost, sampleFamily: item.sampleFamily,
       familyMatched: Boolean(item.familyMatched), baseline: Boolean(item.baseline),
     })),
@@ -659,7 +745,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     writeStatus("testing", {
       auto, cdn, phase: "准备", startedAt, sampleHost: requestHost,
       sampleCount: 1, sampleFamilies: [family], probeFamily: family, requestHost,
-      message: "同 family 全量吞吐 + 瞬时失败重试；剩余至少 7 秒时 Top 2 用 512 KiB 串行确认。",
+      message: "按当前网络选择移动端流量档位；同 family 全量首测，必要时重试，预算允许时 Top 2 串行确认。",
     });
     const entry = await runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost);
     releaseLock(lockToken);

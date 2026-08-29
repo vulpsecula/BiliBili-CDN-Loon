@@ -1,7 +1,7 @@
 #!name = 📺 BiliBili Redirect — CCB Style for Loon
 #!desc = 将 Bilibili 普通视频播放地址重定向到所选 CDN。优先在 playurl 响应中改写 DASH/durl，并以 CDN 请求作为兼容 fallback；手动列表仅保留最近一次全量实测成功节点，支持真实视频吞吐自动测速。
 #!author = vulpsecula
-#!version = 1.4.1
+#!version = 1.5.0
 #!system = iOS,iPadOS,macOS
 #!system_version = 15
 #!loon_version = 3.5.0(969)

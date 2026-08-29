@@ -1,7 +1,19 @@
 const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const ENGINE_VERSION = 12;
+const ENGINE_VERSION = 13;
+// Keep these values in sync with FAMILY_CANDIDATES in the request script.
+const FAMILY_CANDIDATE_FINGERPRINTS = {
+  cos: "upos-sz-mirrorcosb.bilivideo.com|upos-sz-estgcos.bilivideo.com|upos-sz-mirrorcosov.bilivideo.com",
+  ali: "upos-sz-mirrorali.bilivideo.com|upos-sz-mirroraliov.bilivideo.com|upos-sz-mirroralib.bilivideo.com",
+  hw: "upos-sz-mirrorhw.bilivideo.com|upos-sz-estghw.bilivideo.com|upos-sz-mirrorhwo1.bilivideo.com",
+  "08": "upos-sz-mirror08ct.bilivideo.com|upos-sz-mirror08c.bilivideo.com|upos-sz-mirror08h.bilivideo.com",
+  regional: "cn-hk-eq-01-08.bilivideo.com|cn-sdjn-cm-02-04.bilivideo.com|cn-hbwh-fx-01-01.bilivideo.com",
+};
+
+function candidateFingerprint(family) {
+  return FAMILY_CANDIDATE_FINGERPRINTS[family] || "";
+}
 
 function args() {
   if ($argument && typeof $argument === "object") return $argument;
@@ -104,6 +116,7 @@ function loadFamilyRanking(family) {
   const entry = bucket.families[family];
   if (!entry || typeof entry !== "object") return null;
   if (entry.engineVersion !== ENGINE_VERSION) return null;
+  if (entry.candidateFingerprint !== candidateFingerprint(family)) return null;
   if (typeof entry.at !== "number" || Date.now() - entry.at > CACHE_TTL_MS) return null;
   if (typeof entry.best !== "string" || !entry.best) return null;
   return entry;
