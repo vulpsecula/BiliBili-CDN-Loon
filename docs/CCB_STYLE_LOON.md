@@ -21,7 +21,7 @@
 https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.plugin
 ```
 
-Loon 需要 `3.5.0(969)` 或更高版本，并需要安装、信任 MITM 证书。
+Loon 需要 `3.5.0(969)` 或更高版本，并需要安装、信任 MITM 证书。还需要在 Loon 的 **MitM → QUIC 回退保护** 中开启该选项；插件不再额外维护重复的 QUIC `REJECT` 规则。这样当 QUIC 连接的 SNI 命中本插件的 MitM hostname 时，由 Loon 自身负责拒绝 QUIC 并促使客户端回退到可被 HTTP/MITM 脚本处理的连接。
 
 ## 手动模式
 
@@ -207,7 +207,7 @@ Wi-Fi SSID / cellular 标识
 ## 注意事项
 
 - 不要同时启用其他会修改同一批 Bilibili playurl 或 `/upgcxcode/` 请求的 CDN 插件，否则结果取决于脚本执行顺序；
-- 插件对相关视频域名拒绝 QUIC，让流量回退到可被 HTTP/MITM 脚本处理的连接；
+- 必须开启 Loon 的 `MitM → QUIC 回退保护`。本插件不再添加独立 QUIC `REJECT` 规则，QUIC 降级统一交给 Loon 的原生机制；
 - 自动测速不会把视频 URL 或测速结果上传到本项目服务器；
 - CDN、播放接口和签名策略都可能变化。如果出现问题，优先查看 `📊 查看 CDN 测速状态 / 结果` 和 request script 日志中的 `✅ 实际使用 CDN`。
 
