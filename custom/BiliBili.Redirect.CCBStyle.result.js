@@ -79,7 +79,7 @@ function stateName(state) {
     waiting: "等待媒体 URL",
     testing: "测速中",
     success: "测速成功",
-    cached: "使用测速缓存",
+    cached: "使用选择缓存",
     error: "测速失败",
   }[state] || state || "未知";
 }
@@ -145,18 +145,18 @@ function actualRequestSummary(status) {
 }
 
 function notify(subtitle, body, clipboard) {
-  console.log("[BiliBili Redirect] ===== 测速状态 / 结果 =====");
+  console.log("[BiliBili Redirect] ===== 自动选择节点结果 =====");
   console.log(body);
   console.log("[BiliBili Redirect] ==========================");
   try {
     $notification.post(
-      "📺 BiliBili CDN 测速状态 / 结果",
+      "📺 BiliBili 自动选择节点结果",
       subtitle,
       body,
       clipboard ? { clipboard } : null,
     );
   } catch (_) {
-    $notification.post("📺 BiliBili CDN 测速状态 / 结果", subtitle, body);
+    $notification.post("📺 BiliBili 自动选择节点结果", subtitle, body);
   }
 }
 
@@ -170,7 +170,7 @@ try {
   const actualRequest = actualRequestSummary(status);
 
   const common = [
-    `自动测速：${auto ? "已开启" : "已关闭"}`,
+    `自动选择节点：${auto ? "已开启" : "已关闭"}`,
     `手动 CDN：${manualCdn}`,
     `当前网络：${key}`,
     actualRequest ? `最近实际请求：${actualRequest}` : null,
@@ -181,8 +181,8 @@ try {
     const body = [
       ...common,
       "状态：手动模式",
-      "自动测速关闭时始终使用上方手动 CDN。",
-      recent ? `最近自动测速：${recent.probeFamily || "unknown"} → ${recent.best}` : "最近自动测速：无",
+      "自动选择节点关闭时始终使用上方手动 CDN。",
+      recent ? `最近自动选择：${recent.probeFamily || "unknown"} → ${recent.best}` : "最近自动选择：无",
     ].join("\n");
     notify("手动模式", body);
     $done();
@@ -196,10 +196,10 @@ try {
       `已缓存 family：${familyEntries.length}`,
       ...familyEntries.map(familySummary),
       "",
-      `最近测速 family：${latest.probeFamily || familyEntries[0].family}`,
+      `最近自动选择 family：${latest.probeFamily || familyEntries[0].family}`,
       latest.mode === "single-candidate-passthrough"
-        ? "最近测速结果：只有原始 CDN，无需测速，已静默直通"
-        : `最近测速选中：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
+        ? "最近自动选择结果：只有原始 CDN，无需测速，已静默直通"
+        : `最近自动选择节点：${latest.best} · ${Number(latest.bestMbps || 0).toFixed(1)} Mbps`,
       `来源：${sourceName(latest.source)}`,
       latest.mode ? `测速模式：${latest.mode}` : null,
       latest.measurementProfile
@@ -218,7 +218,7 @@ try {
       ...familyEntries.map(familySummary),
       "",
       actualRequest ? `==== 最近实际请求：${actualRequest} ====` : null,
-      `==== 最近测速：${latest.probeFamily || "unknown"} ====`,
+      `==== 最近自动选择：${latest.probeFamily || "unknown"} ====`,
       ...(ranking.length ? ranking.map(line) : ["无测速排名（单候选直通）"]),
       "",
       "==== 失败诊断 ====",
@@ -251,15 +251,15 @@ try {
   } else {
     const body = [
       ...common,
-      "状态：未检测到测速触发",
-      "播放一个普通视频后再次运行这里即可看到各 CDN family 的独立缓存。",
+      "状态：未检测到自动选择触发",
+      "播放一个普通视频后再次运行这里即可看到各 CDN family 的独立选择缓存。",
     ].join("\n");
     notify("等待触发", body);
     $done();
   }
 } catch (error) {
-  const message = `读取测速状态失败：${error}`;
+  const message = `读取自动选择节点结果失败：${error}`;
   console.log(`[BiliBili Redirect] ${message}`);
-  $notification.post("📺 BiliBili CDN 测速状态 / 结果", "读取失败", message);
+  $notification.post("📺 BiliBili 自动选择节点结果", "读取失败", message);
   $done();
 }
