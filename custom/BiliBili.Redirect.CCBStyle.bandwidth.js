@@ -1,13 +1,17 @@
 const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
 const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
 const AUTO_HEADER = "X-CCB-Speedtest";
-const TEST_BVID = "BV1eL4k6jEjd";
+const DEFAULT_TEST_BVID = "BV1eL4k6jEjd";
+const DEFAULT_TARGET_SECONDS = 6;
+const MIN_TARGET_SECONDS = 3;
+const MAX_TARGET_SECONDS = 10;
 const API_TIMEOUT_MS = 5000;
-const WARMUP_TIMEOUT_MS = 5000;
-const CALIBRATION_TIMEOUT_MS = 7000;
-const ROUND_TIMEOUT_MS = 8000;
-const TARGET_ROUND_SECONDS = 2.5;
+const WARMUP_TIMEOUT_MS = 6000;
+const CALIBRATION_TIMEOUT_MS = 8000;
+const TRANSFER_TIMEOUT_MS = 10000;
 const ROUND_COUNT = 3;
+const CHUNK_TARGET_SECONDS = 1.25;
+const MAX_REQUESTS_PER_ROUND = 64;
 
 const API_HEADERS = {
   "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
@@ -154,6 +158,17 @@ function currentTarget(options) {
   return null;
 }
 
+function configuredBvid(options) {
+  const value = String((options && options.test_bvid) || DEFAULT_TEST_BVID).trim();
+  return /^BV[0-9A-Za-z]+$/.test(value) ? value : null;
+}
+
+function configuredTargetSeconds(options) {
+  const raw = Number(options && options.test_seconds);
+  const value = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TARGET_SECONDS;
+  return Math.max(MIN_TARGET_SECONDS, Math.min(MAX_TARGET_SECONDS, value));
+}
+
 function hardHttpGet(params, hardTimeout) {
   return new Promise((resolve) => {
     let settled = false;
@@ -174,6 +189,18 @@ function hardHttpGet(params, hardTimeout) {
 
 function responseStatus(response) {
   return Number((response && (response.status || response.statusCode)) || 0);
+}
+
+function responseHeader(response, wanted) {
+  const headers = response && response.headers;
+  if (!headers || typeof headers !== "object") return "";
+  const key = Object.keys(headers).find((name) => name.toLowerCase() === wanted.toLowerCase());
+  return key ? String(headers[key] || "") : "";
+}
+
+function contentRangeTotal(response) {
+  const match = responseHeader(response, "content-range").match(/\/(\d+|\*)$/);
+  return !match || match[1] === "*" ? 0 : Number(match[1]) || 0;
 }
 
 async function getJson(url) {
@@ -222,14 +249,14 @@ function mediaUrlsFromPlayurl(payload) {
   return [...new Set(out)];
 }
 
-async function freshDonor(targetFamily) {
-  const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(TEST_BVID)}`;
+async function freshDonor(bvid, targetFamily) {
+  const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`;
   const view = await getJson(viewUrl);
   if (!view || view.code !== 0 || !view.data || !view.data.cid) {
     throw new Error(`获取测试视频信息失败: ${(view && view.message) || "unknown"}`);
   }
   const cid = view.data.cid;
-  const playurlUrl = `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(TEST_BVID)}&cid=${encodeURIComponent(cid)}&qn=80&fnver=0&fnval=16&fourk=1&otype=json`;
+  const playurlUrl = `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}&qn=80&fnver=0&fnval=16&fourk=1&otype=json`;
   const play = await getJson(playurlUrl);
   if (!play || play.code !== 0) throw new Error(`获取测试媒体 URL 失败: ${(play && play.message) || "unknown"}`);
   const urls = mediaUrlsFromPlayurl(play);
@@ -258,14 +285,18 @@ function binaryLength(data) {
   return 0;
 }
 
-async function measureOnce(url, requestedBytes, timeout) {
+async function measureOnce(url, requestedBytes, timeout, startByte = 0) {
+  const start = Math.max(0, Math.floor(startByte));
+  const end = start + Math.max(1, Math.floor(requestedBytes)) - 1;
   const headers = {
     "User-Agent": API_HEADERS["User-Agent"],
     Referer: API_HEADERS.Referer,
     Origin: API_HEADERS.Origin,
     Accept: "*/*",
     "Accept-Encoding": "identity",
-    Range: `bytes=0-${Math.max(1, requestedBytes) - 1}`,
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+    Range: `bytes=${start}-${end}`,
     [AUTO_HEADER]: "1",
   };
   const started = Date.now();
@@ -287,6 +318,7 @@ async function measureOnce(url, requestedBytes, timeout) {
     bytes,
     elapsedMs,
     mbps: ok ? (bytes * 8 / 1e6) / (elapsedMs / 1000) : 0,
+    totalBytes: contentRangeTotal(response),
     error: error ? String(error) : (!ok ? `HTTP ${status || "无响应"}` : ""),
   };
 }
@@ -310,9 +342,54 @@ function mib(bytes) {
   return bytes / 1024 / 1024;
 }
 
+function rangeStart(index, chunkBytes, totalBytes) {
+  if (!totalBytes || totalBytes <= chunkBytes) return 0;
+  const span = totalBytes - chunkBytes;
+  return Math.min(span, (index * chunkBytes) % (span + 1));
+}
+
+async function sustainedRound(url, chunkBytes, targetSeconds, maxRoundBytes, totalBytes) {
+  let bytes = 0;
+  let elapsedMs = 0;
+  let requests = 0;
+  let lastError = "";
+  const targetMs = targetSeconds * 1000;
+
+  while (elapsedMs < targetMs && bytes < maxRoundBytes && requests < MAX_REQUESTS_PER_ROUND) {
+    const requestBytes = Math.min(chunkBytes, maxRoundBytes - bytes);
+    const start = rangeStart(requests, requestBytes, totalBytes);
+    const sample = await measureOnce(url, requestBytes, TRANSFER_TIMEOUT_MS, start);
+    requests += 1;
+    if (!sample.ok) {
+      lastError = sample.error || `HTTP ${sample.status || "无响应"}`;
+      break;
+    }
+    bytes += sample.bytes;
+    elapsedMs += sample.elapsedMs;
+    if (!totalBytes && sample.totalBytes) totalBytes = sample.totalBytes;
+  }
+
+  const capped = bytes >= maxRoundBytes && elapsedMs < targetMs;
+  const reachedTime = elapsedMs >= targetMs;
+  const sufficient = reachedTime || capped;
+  const ok = sufficient && bytes >= 512 * 1024 && elapsedMs > 0;
+  return {
+    ok,
+    bytes,
+    elapsedMs,
+    requests,
+    capped,
+    reachedTime,
+    mbps: bytes > 0 && elapsedMs > 0 ? (bytes * 8 / 1e6) / (elapsedMs / 1000) : 0,
+    error: ok ? "" : (lastError || `采样不足：${(elapsedMs / 1000).toFixed(2)} s / ${mib(bytes).toFixed(2)} MiB`),
+  };
+}
+
 function formatSample(label, sample) {
   if (!sample || !sample.ok) return `${label}：失败 · ${(sample && sample.error) || "unknown"}`;
-  return `${label}：${sample.mbps.toFixed(1)} Mbps · ${mib(sample.bytes).toFixed(2)} MiB / ${(sample.elapsedMs / 1000).toFixed(2)} s`;
+  const requests = sample.requests ? ` · ${sample.requests} 次 Range` : "";
+  const capped = sample.capped ? " · 达流量上限" : "";
+  return `${label}：${sample.mbps.toFixed(1)} Mbps · ${mib(sample.bytes).toFixed(2)} MiB / ${(sample.elapsedMs / 1000).toFixed(2)} s${requests}${capped}`;
 }
 
 function restoreSyntheticPlayurlStatus(previousStatus, playurlUrl) {
@@ -342,32 +419,56 @@ function notify(title, subtitle, body) {
     return;
   }
 
+  const bvid = configuredBvid(options);
+  if (!bvid) {
+    notify("🎯 当前 CDN 持续带宽", "BV 号格式无效", `当前值：${String(options.test_bvid || "")}\n请输入类似 BV1eL4k6jEjd 的 BV 号。`);
+    $done();
+    return;
+  }
+  const targetSeconds = configuredTargetSeconds(options);
+
   const key = networkKey();
   const previousStatus = readMap(STATUS_KEY)[key] || null;
   const profile = isCellular()
-    ? { name: "蜂窝", warmupBytes: 384 * 1024, calibrationBytes: 768 * 1024, minRoundBytes: 512 * 1024, maxRoundBytes: 4 * 1024 * 1024 }
-    : { name: "Wi-Fi", warmupBytes: 512 * 1024, calibrationBytes: 1024 * 1024, minRoundBytes: 1024 * 1024, maxRoundBytes: 8 * 1024 * 1024 };
+    ? {
+        name: "蜂窝",
+        warmupBytes: 512 * 1024,
+        calibrationBytes: 1024 * 1024,
+        minChunkBytes: 512 * 1024,
+        maxChunkBytes: 4 * 1024 * 1024,
+        maxRoundBytes: 20 * 1024 * 1024,
+      }
+    : {
+        name: "Wi-Fi",
+        warmupBytes: 1024 * 1024,
+        calibrationBytes: 2 * 1024 * 1024,
+        minChunkBytes: 1024 * 1024,
+        maxChunkBytes: 8 * 1024 * 1024,
+        maxRoundBytes: 64 * 1024 * 1024,
+      };
 
   let donor = null;
   const startedAt = Date.now();
   try {
-    donor = await freshDonor(target.family);
+    donor = await freshDonor(bvid, target.family);
     const testUrl = swapHost(donor.url, target.node);
 
     console.log(`[BiliBili Redirect] 手动持续带宽测速：${target.node} · family=${target.family} · ${profile.name} · DIRECT`);
-    console.log(`[BiliBili Redirect] donor family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family fallback）"}`);
+    console.log(`[BiliBili Redirect] 测试视频=${bvid} · 单轮目标=${targetSeconds}s · donor family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family fallback）"}`);
 
     const warmup = await measureOnce(testUrl, profile.warmupBytes, WARMUP_TIMEOUT_MS);
     if (!warmup.ok) throw new Error(`预热失败：${warmup.error}`);
 
     const calibration = await measureOnce(testUrl, profile.calibrationBytes, CALIBRATION_TIMEOUT_MS);
     const referenceMbps = calibration.ok ? calibration.mbps : warmup.mbps;
-    const rawBytes = referenceMbps * 1e6 / 8 * TARGET_ROUND_SECONDS;
-    const measureBytes = roundBytes(clamp(rawBytes, profile.minRoundBytes, profile.maxRoundBytes));
+    const rawChunkBytes = referenceMbps * 1e6 / 8 * CHUNK_TARGET_SECONDS;
+    let chunkBytes = roundBytes(clamp(rawChunkBytes, profile.minChunkBytes, profile.maxChunkBytes));
+    const totalBytes = calibration.totalBytes || warmup.totalBytes || 0;
+    if (totalBytes > 0) chunkBytes = Math.min(chunkBytes, totalBytes);
 
     const rounds = [];
     for (let i = 0; i < ROUND_COUNT; i += 1) {
-      const sample = await measureOnce(testUrl, measureBytes, ROUND_TIMEOUT_MS);
+      const sample = await sustainedRound(testUrl, chunkBytes, targetSeconds, profile.maxRoundBytes, totalBytes);
       rounds.push(sample);
       console.log(`[BiliBili Redirect] ${formatSample(`Round ${i + 1}`, sample)}`);
     }
@@ -382,25 +483,27 @@ function notify(title, subtitle, body) {
     const min = Math.min(...rates);
     const max = Math.max(...rates);
     const stability = med > 0 ? min / med * 100 : 0;
-    const totalBytes = warmup.bytes + calibration.bytes + rounds.reduce((sum, item) => sum + Number(item.bytes || 0), 0);
+    const totalTraffic = warmup.bytes + calibration.bytes + rounds.reduce((sum, item) => sum + Number(item.bytes || 0), 0);
     const elapsed = (Date.now() - startedAt) / 1000;
 
     const body = [
       `节点：${target.node}`,
       `family：${target.family} · 来源：${target.source}`,
       `网络：${key} · ${profile.name} · DIRECT`,
-      `测试视频：${TEST_BVID} · donor=${donor.family}${donor.exactFamily ? "" : "（跨 family）"}`,
+      `测试视频：${bvid} · donor=${donor.family}${donor.exactFamily ? "" : "（跨 family）"}`,
+      `单轮目标：${targetSeconds.toFixed(1)} s · 单轮流量上限：${mib(profile.maxRoundBytes).toFixed(0)} MiB`,
       "",
       formatSample("预热（不计分）", warmup),
       formatSample("校准（不计分）", calibration),
-      `正式样本：${mib(measureBytes).toFixed(2)} MiB × ${ROUND_COUNT}`,
+      `持续请求块：约 ${mib(chunkBytes).toFixed(2)} MiB / 次`,
       ...rounds.map((item, index) => formatSample(`Round ${index + 1}`, item)),
       "",
       `持续带宽中位数：${med.toFixed(1)} Mbps`,
       `最低 / 最高：${min.toFixed(1)} / ${max.toFixed(1)} Mbps`,
       `稳定度（最低÷中位数）：${stability.toFixed(0)}%`,
-      `成功：${good.length}/${ROUND_COUNT} · 实际流量：${mib(totalBytes).toFixed(1)} MiB · 总耗时：${elapsed.toFixed(1)} s`,
+      `成功：${good.length}/${ROUND_COUNT} · 实际流量：${mib(totalTraffic).toFixed(1)} MiB · 总耗时：${elapsed.toFixed(1)} s`,
       "",
+      donor.exactFamily ? "donor 与当前 CDN family 一致。" : "注意：没有找到同 family donor，本次使用跨 family signed URL，结果仅供参考。",
       "本测试不会修改自动测速缓存或当前 CDN 选择。",
     ].join("\n");
 
@@ -410,6 +513,7 @@ function notify(title, subtitle, body) {
       `节点：${target.node}`,
       `family：${target.family} · 来源：${target.source}`,
       `网络：${key}`,
+      `测试视频：${bvid}`,
       `错误：${error}`,
       "",
       "测速不会修改自动测速缓存或当前 CDN 选择。",
