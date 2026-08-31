@@ -4,7 +4,7 @@
 ## Loon 扩展
 
 本 fork 额外提供一个仅面向 Loon 的可选 CDN 插件，用于重定向 Bilibili 普通视频 CDN。手动列表仅保留最近一次全量持续带宽测试中可请求成功的 CCB 节点。
-需要 Loon `3.5.0(969)` 或更高版本。
+需要 Loon `3.5.0(969)` 或更高版本，并在 Loon 的 MitM 设置中开启 **QUIC 回退保护**，让命中 MitM 域名的 HTTP/3/QUIC 视频流量回退到可被脚本处理的连接。
 
 - [一键导入 Loon](https://www.nsloon.com/openloon/import?plugin=https%3A%2F%2Fraw.githubusercontent.com%2Fvulpsecula%2FBiliBili-CDN-Loon%2Fmain%2Fcustom%2FBiliBili.Redirect.CCBStyle.plugin)
 - [查看 Raw 插件](https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.plugin)
