@@ -279,13 +279,19 @@ def media_url_from_bvid(bvid: str, timeout: float, cookie: str | None = None) ->
             page_response.raise_for_status()
             page = page_response.text
 
-            playinfo = extract_embedded_json(page, "window.__playinfo__=")
+            playinfo = (
+                extract_embedded_json(page, "window.__playinfo__=")
+                or extract_embedded_json(page, "window.__playinfo__ =")
+            )
             donor = pick_media_url(playinfo) if isinstance(playinfo, dict) else None
             if donor:
                 print("播放 URL 来源: 视频网页内嵌 __playinfo__（未调用 playurl API）")
                 return donor
 
-            initial_state = extract_embedded_json(page, "window.__INITIAL_STATE__=")
+            initial_state = (
+                extract_embedded_json(page, "window.__INITIAL_STATE__=")
+                or extract_embedded_json(page, "window.__INITIAL_STATE__ =")
+            )
             cid = page_cid(initial_state)
             if not cid:
                 raise SystemExit(
