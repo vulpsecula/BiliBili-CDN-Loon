@@ -10,9 +10,9 @@
 - [查看 Raw 插件](https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.plugin)
 - [使用说明](docs/CCB_STYLE_LOON.md)
 
-### 自动测速
+### 自动选择节点
 
-开启 `⚡ 自动测速` 后，CDN request fallback 会使用当前真实视频的 signed URL，只在同 CDN family 的小候选池中比较吞吐：
+开启 `⚡ 自动选择节点` 后，CDN request fallback 会使用当前真实视频的 signed URL，只在同 CDN family 的小候选池中比较吞吐：
 
 1. 最多 4 个候选同时首测：Wi-Fi 每个 `512 KiB`，蜂窝网络每个 `384 KiB`；
 2. 只有首测不足两个可用节点时，才对连接类异常低并发重试；
@@ -29,7 +29,7 @@ JSON `playurl` response hook 不再维护第二套测速引擎：手动模式仍
 插件菜单提供 `🎯 测试当前 CDN 持续带宽`。它不会重新选节点，而是针对当前正在使用/最近选择的单个 CDN 做更长的串行持续测试：
 
 - 自动模式优先取最近实际请求的 CDN；没有最近请求时取最新 family 缓存；手动模式直接测试当前手动节点；
-- `🎞 测试视频 BV号` 可在插件设置中自行填写，默认 `BV1eL4k6jEjd`；每次运行都会动态获取新的 signed URL；
+- `🎞 测试视频 BV号` 可在插件设置中自行填写，默认 `BV1eL4k6jEjd`；手动长测优先读取该视频网页内嵌的 `__playinfo__`，不再调用容易触发 412 的 `view/playurl` API；网页被风控或没有 playinfo 时，会回退到最近 30 分钟内真实播放请求保存的 signed URL；
 - `⏱ 单轮测速秒数` 默认 `6` 秒，可配置为 `3–10` 秒，正式测试固定进行 3 轮；
 - 先做不计分预热和校准，再根据校准带宽自适应每个 Range 请求块大小；
 - 每一正式轮会连续串行请求多个 Range，直到达到目标时间或单轮流量上限，而不是只下载一个短样本；
