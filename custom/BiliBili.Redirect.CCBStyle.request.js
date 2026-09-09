@@ -8,6 +8,7 @@ const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 12000;
 const ENGINE_VERSION = 13;
 const AUTO_HEADER = "X-CCB-Speedtest";
+let CURRENT_SAMPLE_URL = "";
 
 // Mobile-balanced probing: all candidates in the small same-family pool start
 // together so a fourth candidate never gets a quieter, later time slot. The
@@ -124,7 +125,14 @@ function writeMap(key, map, limit = 8) {
 function writeStatus(state, extra = {}) {
   const key = networkKey();
   const map = readMap(STATUS_KEY);
-  map[key] = { state, at: Date.now(), network: key, source: "cdn-request", ...extra };
+  map[key] = {
+    state,
+    at: Date.now(),
+    network: key,
+    source: "cdn-request",
+    ...(CURRENT_SAMPLE_URL ? { sampleUrl: CURRENT_SAMPLE_URL } : {}),
+    ...extra,
+  };
   writeMap(STATUS_KEY, map, 8);
 }
 
@@ -691,6 +699,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
   let requestHost = "";
   try { requestHost = new URL($request.url).hostname; } catch (_) {}
   const sample = describeSample($request.url);
+  if (sample && sample.url) CURRENT_SAMPLE_URL = sample.url;
   const family = sample ? sample.signatureFamily : "unknown";
 
   if (!auto) {
