@@ -6,7 +6,7 @@
 
 - **playurl response hook**：解析 JSON DASH/durl。手动模式可提前改写媒体 URL；自动模式只应用已经存在的有效 family 缓存。
 - **CDN request fallback**：负责自动测速、最终 CDN 选择和真实 `/upgcxcode/` 请求改写，是自动模式唯一的测速引擎。
-- **Generic Scripts**：`📊 查看 CDN 测速状态 / 结果` 只读状态；`🎯 测试当前 CDN 持续带宽` 只做单节点手动长测，不修改自动选择。
+- **Generic Scripts**：`📊 查看自动选择节点结果` 只读状态；`🎯 测试当前 CDN 持续带宽` 只做单节点手动长测，不修改自动选择。
 
 ## 安装要求
 
@@ -24,9 +24,9 @@ MitM → QUIC 回退保护
 
 ### 目标 CDN 节点
 
-关闭 `⚡ 自动测速` 时始终使用该节点。自动测速失败或已有测速任务占用锁时，也会把它作为 fallback。
+关闭 `⚡ 自动选择节点` 时始终使用该节点。自动测速失败或已有测速任务占用锁时，也会把它作为 fallback。
 
-### ⚡ 自动测速
+### ⚡ 自动选择节点
 
 关闭时完全服从手动节点；开启时按当前网络和 CDN family 使用自动缓存，缓存失效时由真实视频请求触发同 family 吞吐测速。
 
@@ -38,7 +38,7 @@ MitM → QUIC 回退保护
 BV1eL4k6jEjd
 ```
 
-可改成任意公开 Bilibili 视频 BV 号。每次运行手动长测时都会重新请求该视频的 playurl，以获取新的 signed media URL。
+可改成任意公开 Bilibili 视频 BV 号。手动长测优先访问该视频的普通网页，并直接读取页面内嵌 `window.__playinfo__` 中的 signed media URL；不再调用 `/x/web-interface/view` 或旧 `/x/player/playurl`。如果网页被 HTTP 412 风控、没有内嵌 playinfo 或无法取得可用媒体 URL，则回退到最近 30 分钟内插件真实拦截到的媒体 signed URL。
 
 ### ⏱ 单轮测速秒数
 
@@ -46,7 +46,7 @@ BV1eL4k6jEjd
 
 ## 手动模式
 
-关闭 `⚡ 自动测速` 后：
+关闭 `⚡ 自动选择节点` 后：
 
 1. JSON playurl 命中时，DASH `baseUrl/base_url/backupUrl/backup_url` 与传统 `durl` 会提前改到手动 CDN；
 2. 后续匹配 `/upgcxcode/` 的真实 CDN 请求仍由 request fallback 改到同一个节点。
@@ -118,7 +118,7 @@ request fallback 使用当前真实视频 signed URL，只比较同 signature fa
 
 ### 测试视频
 
-使用插件参数 `🎞 测试视频 BV号`。脚本调用 Bilibili API 获取该视频当前有效的 playurl 和 signed media URL，并优先寻找与目标 CDN 相同 family 的 donor。
+使用插件参数 `🎞 测试视频 BV号`。脚本首先从该视频普通网页的内嵌 `__playinfo__` 获取 signed media URL，并优先寻找与目标 CDN 相同 family 的 donor。若网页获取失败（包括 HTTP 412）或没有 playinfo，则使用最近 30 分钟内真实播放请求保存的 signed URL；因此正常播放过一个视频后，单节点测速不依赖 Bilibili metadata/playurl API。
 
 如果找不到同 family donor，会明确标记“跨 family”，这种结果只作为参考。
 
@@ -183,7 +183,7 @@ Wi-Fi：
 
 ## 查看状态
 
-`📊 查看 CDN 测速状态 / 结果` 不主动测速，只读取当前缓存和状态。重点字段包括最近实际请求、每个 family 的自动选择、最近测速 winner、首测/重试/串行确认成功数，以及 DNS、timeout、HTTP 等失败诊断。
+`📊 查看自动选择节点结果` 不主动测速，只读取当前缓存和状态。重点字段包括最近实际请求、每个 family 的自动选择、最近测速 winner、首测/重试/串行确认成功数，以及 DNS、timeout、HTTP 等失败诊断。
 
 ## 直连与代理
 
