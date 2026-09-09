@@ -278,11 +278,15 @@ function recentSignedDonor(targetFamily) {
   if (typeof status.at !== "number" || Date.now() - status.at > RECENT_SAMPLE_TTL_MS) return null;
   if (!isMediaUrl(status.sampleUrl)) return null;
   const family = urlFamily(status.sampleUrl);
+  const headers = status.sampleHeaders && typeof status.sampleHeaders === "object"
+    ? { ...status.sampleHeaders }
+    : {};
   return {
     url: status.sampleUrl,
     family,
     exactFamily: family === targetFamily,
     source: "最近真实视频请求",
+    headers,
   };
 }
 
@@ -316,27 +320,32 @@ async function pageDonor(bvid, targetFamily) {
     family: urlFamily(selected),
     exactFamily: Boolean(matched),
     source: `配置 BV 网页（${bvid}）`,
+    headers: {
+      "user-agent": API_HEADERS["User-Agent"],
+      referer: pageUrl,
+      origin: API_HEADERS.Origin,
+      accept: "*/*",
+      "accept-language": PAGE_HEADERS["Accept-Language"],
+    },
   };
 }
 
 async function freshDonor(bvid, targetFamily) {
-  let pageError = "";
+  const recent = recentSignedDonor(targetFamily);
+  if (recent) {
+    console.log("[BiliBili Redirect] 使用最近真实视频请求的 signed URL 与真实请求头，跳过 Bilibili 网页/API。");
+    return recent;
+  }
+
   try {
     return await pageDonor(bvid, targetFamily);
   } catch (error) {
-    pageError = String(error);
+    const pageError = String(error);
     console.log(`[BiliBili Redirect] 配置 BV 网页 donor 获取失败：${pageError}`);
+    throw new Error(
+      `无法取得测速 signed URL：${pageError}。请先正常播放一个 Bilibili 视频，再运行本测速。`
+    );
   }
-
-  const recent = recentSignedDonor(targetFamily);
-  if (recent) {
-    console.log("[BiliBili Redirect] 回退到最近真实视频请求的 signed URL，跳过 view/playurl API。");
-    return { ...recent, fallbackReason: pageError };
-  }
-
-  throw new Error(
-    `无法取得测速 signed URL：${pageError}。当前脚本已停止调用容易触发 412 的 view/playurl API；请先正常播放一个 Bilibili 视频，再运行本测速。`
-  );
 }
 
 function swapHost(raw, node) {
@@ -354,20 +363,36 @@ function binaryLength(data) {
   return 0;
 }
 
-async function measureOnce(url, requestedBytes, timeout, startByte = 0) {
+function mediaHeaders(baseHeaders, start, end) {
+  const headers = {};
+  if (baseHeaders && typeof baseHeaders === "object") {
+    for (const [name, value] of Object.entries(baseHeaders)) {
+      const lower = String(name).toLowerCase();
+      if (["host", ":authority", "range", "accept-encoding", "content-length"].includes(lower)) continue;
+      if (value !== undefined && value !== null && String(value)) headers[name] = String(value);
+    }
+  }
+  headers["Accept-Encoding"] = "identity";
+  headers["Cache-Control"] = "no-cache";
+  headers.Pragma = "no-cache";
+  headers.Range = `bytes=${start}-${end}`;
+  headers[AUTO_HEADER] = "1";
+  return headers;
+}
+
+async function measureOnce(url, requestedBytes, timeout, startByte = 0, baseHeaders = null) {
   const start = Math.max(0, Math.floor(startByte));
   const end = start + Math.max(1, Math.floor(requestedBytes)) - 1;
-  const headers = {
-    "User-Agent": API_HEADERS["User-Agent"],
-    Referer: API_HEADERS.Referer,
-    Origin: API_HEADERS.Origin,
-    Accept: "*/*",
-    "Accept-Encoding": "identity",
-    "Cache-Control": "no-cache",
-    Pragma: "no-cache",
-    Range: `bytes=${start}-${end}`,
-    [AUTO_HEADER]: "1",
-  };
+  const headers = mediaHeaders(
+    baseHeaders || {
+      "user-agent": API_HEADERS["User-Agent"],
+      referer: API_HEADERS.Referer,
+      origin: API_HEADERS.Origin,
+      accept: "*/*",
+    },
+    start,
+    end,
+  );
   const started = Date.now();
   const { error, response, data } = await hardHttpGet({
     url,
@@ -417,7 +442,7 @@ function rangeStart(index, chunkBytes, totalBytes) {
   return Math.min(span, (index * chunkBytes) % (span + 1));
 }
 
-async function sustainedRound(url, chunkBytes, targetSeconds, maxRoundBytes, totalBytes) {
+async function sustainedRound(url, chunkBytes, targetSeconds, maxRoundBytes, totalBytes, baseHeaders) {
   let bytes = 0;
   let elapsedMs = 0;
   let requests = 0;
@@ -427,7 +452,7 @@ async function sustainedRound(url, chunkBytes, targetSeconds, maxRoundBytes, tot
   while (elapsedMs < targetMs && bytes < maxRoundBytes && requests < MAX_REQUESTS_PER_ROUND) {
     const requestBytes = Math.min(chunkBytes, maxRoundBytes - bytes);
     const start = rangeStart(requests, requestBytes, totalBytes);
-    const sample = await measureOnce(url, requestBytes, TRANSFER_TIMEOUT_MS, start);
+    const sample = await measureOnce(url, requestBytes, TRANSFER_TIMEOUT_MS, start, baseHeaders);
     requests += 1;
     if (!sample.ok) {
       lastError = sample.error || `HTTP ${sample.status || "无响应"}`;
@@ -511,12 +536,22 @@ function notify(title, subtitle, body) {
     const testUrl = swapHost(donor.url, target.node);
 
     console.log(`[BiliBili Redirect] 手动持续带宽测速：${target.node} · family=${target.family} · ${profile.name} · DIRECT`);
-    console.log(`[BiliBili Redirect] 测试视频=${bvid} · 单轮目标=${targetSeconds}s · donor=${donor.source} · family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family）"}`);
+    console.log(`[BiliBili Redirect] 配置视频=${bvid} · 单轮目标=${targetSeconds}s · donor=${donor.source} · family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family）"} · headers=${Object.keys(donor.headers || {}).length ? "真实请求头" : "默认请求头"}`);
 
-    const warmup = await measureOnce(testUrl, profile.warmupBytes, WARMUP_TIMEOUT_MS);
-    if (!warmup.ok) throw new Error(`预热失败：${warmup.error}`);
+    const warmup = await measureOnce(testUrl, profile.warmupBytes, WARMUP_TIMEOUT_MS, 0, donor.headers);
+    if (!warmup.ok) {
+      if (warmup.status === 403) {
+        const originalUrl = new URL(donor.url).toString();
+        const originalCheck = await measureOnce(originalUrl, Math.min(profile.warmupBytes, 512 * 1024), WARMUP_TIMEOUT_MS, 0, donor.headers);
+        if (originalCheck.ok) {
+          throw new Error(`预热失败：目标节点 HTTP 403；同一 signed URL 在原始 host 可用，说明本资源不接受当前跨 host 改写`);
+        }
+        throw new Error(`预热失败：目标节点 HTTP 403；原始 host 也${originalCheck.status ? ` HTTP ${originalCheck.status}` : "失败"}，signed URL 可能已失效或请求头仍不完整`);
+      }
+      throw new Error(`预热失败：${warmup.error}`);
+    }
 
-    const calibration = await measureOnce(testUrl, profile.calibrationBytes, CALIBRATION_TIMEOUT_MS);
+    const calibration = await measureOnce(testUrl, profile.calibrationBytes, CALIBRATION_TIMEOUT_MS, 0, donor.headers);
     const referenceMbps = calibration.ok ? calibration.mbps : warmup.mbps;
     const rawChunkBytes = referenceMbps * 1e6 / 8 * CHUNK_TARGET_SECONDS;
     let chunkBytes = roundBytes(clamp(rawChunkBytes, profile.minChunkBytes, profile.maxChunkBytes));
@@ -525,7 +560,7 @@ function notify(title, subtitle, body) {
 
     const rounds = [];
     for (let i = 0; i < ROUND_COUNT; i += 1) {
-      const sample = await sustainedRound(testUrl, chunkBytes, targetSeconds, profile.maxRoundBytes, totalBytes);
+      const sample = await sustainedRound(testUrl, chunkBytes, targetSeconds, profile.maxRoundBytes, totalBytes, donor.headers);
       rounds.push(sample);
       console.log(`[BiliBili Redirect] ${formatSample(`Round ${i + 1}`, sample)}`);
     }
@@ -547,7 +582,7 @@ function notify(title, subtitle, body) {
       `节点：${target.node}`,
       `family：${target.family} · 来源：${target.source}`,
       `网络：${key} · ${profile.name} · DIRECT`,
-      `测试视频：${bvid}`,
+      `配置视频：${bvid}`,
       `donor：${donor.source} · ${donor.family}${donor.exactFamily ? "" : "（跨 family）"}`,
       `单轮目标：${targetSeconds.toFixed(1)} s · 单轮流量上限：${mib(profile.maxRoundBytes).toFixed(0)} MiB`,
       "",
