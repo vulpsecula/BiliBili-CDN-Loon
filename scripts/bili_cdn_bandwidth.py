@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import os
 import random
 import re
 import statistics
@@ -18,7 +20,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -32,6 +34,26 @@ BASE_HEADERS = {
     "Accept": "*/*",
     "Accept-Encoding": "identity",
 }
+PAGE_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
+}
+API_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Origin": "https://www.bilibili.com",
+}
+MIXIN_KEY_ENC_TAB = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+]
 CHUNK_SIZE = 128 * 1024
 BUCKET_SECONDS = 0.5
 
@@ -93,28 +115,48 @@ def collect_urls(value):
     return found
 
 
-def media_url_from_bvid(bvid: str, timeout: float) -> str:
-    if not re.fullmatch(r"BV[0-9A-Za-z]+", bvid):
-        raise SystemExit("BVID 格式不正确")
-    view = get_json(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", timeout)
-    if view.get("code") != 0:
-        raise SystemExit(f"获取视频信息失败: {view.get('message')}")
-    play = get_json(
-        "https://api.bilibili.com/x/player/playurl",
-        timeout,
-        params={
-            "bvid": bvid,
-            "cid": view["data"]["cid"],
-            "qn": 80,
-            "fnver": 0,
-            "fnval": 16,
-            "fourk": 1,
-            "otype": "json",
-        },
-    )
-    if play.get("code") != 0:
-        raise SystemExit("获取播放 URL 失败，请改用 --media-url。")
-    data = play.get("data") or {}
+def extract_embedded_json(page: str, marker: str):
+    """Extract one JSON object/array following a JavaScript assignment marker."""
+    marker_at = page.find(marker)
+    if marker_at < 0:
+        return None
+    start = marker_at + len(marker)
+    while start < len(page) and page[start].isspace():
+        start += 1
+    if start >= len(page) or page[start] not in "[{":
+        return None
+
+    opening = page[start]
+    closing = "}" if opening == "{" else "]"
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(page)):
+        char = page[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(page[start : index + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def pick_media_url(play: dict) -> str | None:
+    data = (play or {}).get("data") or (play or {}).get("result") or {}
     videos = list(((data.get("dash") or {}).get("video") or []))
     videos.sort(key=lambda item: item.get("bandwidth") or 0, reverse=True)
     candidates = []
@@ -125,6 +167,152 @@ def media_url_from_bvid(bvid: str, timeout: float) -> str:
         host = (urlsplit(url).hostname or "").lower()
         if valid_media_url(url) and host != "upos-sz-mirror14b.bilivideo.com":
             return url
+    return None
+
+
+def page_cid(initial_state: dict | None) -> int | None:
+    if not isinstance(initial_state, dict):
+        return None
+    video = initial_state.get("videoData") or {}
+    cid = video.get("cid")
+    if cid:
+        return int(cid)
+    pages = video.get("pages") or []
+    if pages and isinstance(pages[0], dict) and pages[0].get("cid"):
+        return int(pages[0]["cid"])
+    return None
+
+
+def wbi_key(url: str) -> str:
+    name = (urlsplit(url).path.rsplit("/", 1)[-1] or "").split(".", 1)[0]
+    if not name:
+        raise RuntimeError("WBI key URL 格式异常")
+    return name
+
+
+def sign_wbi(params: dict, img_key: str, sub_key: str) -> str:
+    origin = img_key + sub_key
+    if len(origin) < 64:
+        raise RuntimeError("WBI key 长度异常")
+    mixin_key = "".join(origin[index] for index in MIXIN_KEY_ENC_TAB)[:32]
+    signed = dict(params)
+    signed["wts"] = int(time.time())
+    filtered = {
+        key: re.sub(r"[!'()*]", "", str(value))
+        for key, value in signed.items()
+    }
+    query = urlencode(sorted(filtered.items()), quote_via=quote)
+    digest = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
+    return f"{query}&w_rid={digest}"
+
+
+def response_json(response: httpx.Response, context: str) -> dict:
+    if response.status_code == 412:
+        raise RuntimeError(f"{context} HTTP 412（Bilibili 风控拒绝）")
+    response.raise_for_status()
+    data = response.json()
+    if data.get("code") == -412:
+        raise RuntimeError(f"{context} code -412（Bilibili 风控拒绝）")
+    return data
+
+
+def fetch_wbi_playurl(
+    client: httpx.Client,
+    bvid: str,
+    cid: int,
+    timeout: float,
+    referer: str,
+) -> dict:
+    headers = dict(API_HEADERS)
+    headers["Referer"] = referer
+
+    nav = response_json(
+        client.get("https://api.bilibili.com/x/web-interface/nav", headers=headers, timeout=timeout),
+        "WBI nav",
+    )
+    wbi_img = (nav.get("data") or {}).get("wbi_img") or {}
+    img_key = wbi_key(wbi_img.get("img_url") or "")
+    sub_key = wbi_key(wbi_img.get("sub_url") or "")
+    params = {
+        "bvid": bvid,
+        "cid": cid,
+        "qn": 80,
+        "fnver": 0,
+        "fnval": 16,
+        "fourk": 1,
+        "otype": "json",
+    }
+    query = sign_wbi(params, img_key, sub_key)
+    return response_json(
+        client.get(
+            f"https://api.bilibili.com/x/player/wbi/playurl?{query}",
+            headers=headers,
+            timeout=timeout,
+        ),
+        "WBI playurl",
+    )
+
+
+def media_url_from_bvid(bvid: str, timeout: float, cookie: str | None = None) -> str:
+    if not re.fullmatch(r"BV[0-9A-Za-z]+", bvid):
+        raise SystemExit("BVID 格式不正确")
+
+    page_url = f"https://www.bilibili.com/video/{bvid}/"
+    headers = dict(PAGE_HEADERS)
+    if cookie:
+        headers["Cookie"] = cookie
+
+    try:
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            trust_env=False,
+            http2=True,
+            headers=headers,
+        ) as client:
+            page_response = client.get(page_url)
+            if page_response.status_code == 412:
+                raise SystemExit(
+                    "Bilibili 视频网页返回 HTTP 412。可设置 BILIBILI_COOKIE/--cookie，"
+                    "或直接使用浏览器 Network 中的 --media-url。"
+                )
+            page_response.raise_for_status()
+            page = page_response.text
+
+            playinfo = extract_embedded_json(page, "window.__playinfo__=")
+            donor = pick_media_url(playinfo) if isinstance(playinfo, dict) else None
+            if donor:
+                print("播放 URL 来源: 视频网页内嵌 __playinfo__（未调用 playurl API）")
+                return donor
+
+            initial_state = extract_embedded_json(page, "window.__INITIAL_STATE__=")
+            cid = page_cid(initial_state)
+            if not cid:
+                raise SystemExit(
+                    "视频网页未找到 __playinfo__ 或 cid；请使用浏览器 Network 中的 --media-url。"
+                )
+
+            try:
+                play = fetch_wbi_playurl(client, bvid, cid, timeout, page_url)
+            except (httpx.HTTPError, RuntimeError) as exc:
+                raise SystemExit(
+                    f"网页可访问，但获取 WBI 播放 URL 失败: {exc}\n"
+                    "当前 Bilibili 可能对脚本化 playurl 请求启用了风控。"
+                    "建议直接使用浏览器 Network 中的 --media-url；"
+                    "也可通过 BILIBILI_COOKIE/--cookie 提供浏览器 Cookie。"
+                ) from exc
+
+            if play.get("code") != 0:
+                raise SystemExit(
+                    f"获取 WBI 播放 URL 失败: code={play.get('code')} {play.get('message') or ''}"
+                )
+            donor = pick_media_url(play)
+            if donor:
+                print("播放 URL 来源: WBI playurl")
+                return donor
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"访问 Bilibili 视频网页失败: {type(exc).__name__}: {exc}") from exc
+
     raise SystemExit("没有找到可换 host 的 bilivideo.com 媒体 URL，请使用 --media-url。")
 
 
@@ -214,7 +402,8 @@ def test_one(
                 with client.stream("GET", url, headers=headers) as response:
                     status = response.status_code
                     if status not in {200, 206}:
-                        return Sample(phase, round_no, host, region, False, requests=request_count, http_status=status, error=f"HTTP {status}")
+                        error = "HTTP 412（风控/请求拒绝，不立即重试）" if status == 412 else f"HTTP {status}"
+                        return Sample(phase, round_no, host, region, False, requests=request_count, http_status=status, error=error)
                     got_body = False
                     for chunk in response.iter_bytes(CHUNK_SIZE):
                         if not chunk:
@@ -303,6 +492,10 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--bvid", help="例如 BV1sVtw6JEN2")
     source.add_argument("--media-url", help="完整 bilivideo.com 媒体 URL")
+    parser.add_argument(
+        "--cookie",
+        help="可选的 bilibili.com Cookie 请求头；也可使用环境变量 BILIBILI_COOKIE",
+    )
     parser.add_argument("--region", action="append", help="限定 CCB 地区，可重复")
     parser.add_argument("--include", action="append", default=[], help="额外节点，可重复")
     parser.add_argument("--pin", action="append", default=[], help="强制进入终测，可重复")
@@ -329,7 +522,8 @@ def main():
         parser.error("finalists 必须 >= top")
 
     api_timeout = max(args.connect_timeout, args.read_timeout)
-    donor = args.media_url or media_url_from_bvid(args.bvid, api_timeout)
+    cookie = args.cookie or os.environ.get("BILIBILI_COOKIE")
+    donor = args.media_url or media_url_from_bvid(args.bvid, api_timeout, cookie)
     if not valid_media_url(donor):
         raise SystemExit("媒体 URL 必须属于 bilivideo.com，并保留完整 query 参数。")
     total = discover_total(donor, api_timeout)
@@ -376,7 +570,7 @@ def main():
             )
             attempts.append(sample)
             all_samples.append(sample)
-            if sample.ok:
+            if sample.ok or sample.http_status == 412:
                 break
         best = max(attempts, key=lambda item: (item.ok, item.mbps))
         coarse_best[host] = best
