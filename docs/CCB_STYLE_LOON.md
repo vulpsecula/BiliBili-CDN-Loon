@@ -38,7 +38,7 @@ MitM → QUIC 回退保护
 BV1eL4k6jEjd
 ```
 
-可改成任意公开 Bilibili 视频 BV 号。手动长测优先访问该视频的普通网页，并直接读取页面内嵌 `window.__playinfo__` 中的 signed media URL；不再调用 `/x/web-interface/view` 或旧 `/x/player/playurl`。如果网页被 HTTP 412 风控、没有内嵌 playinfo 或无法取得可用媒体 URL，则回退到最近 30 分钟内插件真实拦截到的媒体 signed URL。
+可改成任意公开 Bilibili 视频 BV 号。手动长测优先使用最近 30 分钟内插件真实拦截到的媒体 signed URL，并复用该真实请求的关键 headers；这种情况下不会访问 Bilibili 网页或 metadata/playurl API。只有没有近期真实样本时，才尝试访问该 BV 的普通网页并读取 `window.__playinfo__`。
 
 ### ⏱ 单轮测速秒数
 
@@ -118,9 +118,9 @@ request fallback 使用当前真实视频 signed URL，只比较同 signature fa
 
 ### 测试视频
 
-使用插件参数 `🎞 测试视频 BV号`。脚本首先从该视频普通网页的内嵌 `__playinfo__` 获取 signed media URL，并优先寻找与目标 CDN 相同 family 的 donor。若网页获取失败（包括 HTTP 412）或没有 playinfo，则使用最近 30 分钟内真实播放请求保存的 signed URL；因此正常播放过一个视频后，单节点测速不依赖 Bilibili metadata/playurl API。
+使用插件参数 `🎞 测试视频 BV号` 作为无近期样本时的 fallback。正常情况下，脚本直接使用最近 30 分钟内真实播放请求保存的 signed media URL，并复用该请求的 User-Agent、Referer、Origin、Accept 等关键 headers；因此刚正常播放过视频后，单节点测速既不访问 Bilibili 网页，也不依赖 metadata/playurl API。
 
-如果找不到同 family donor，会明确标记“跨 family”，这种结果只作为参考。
+如果最近真实 signed URL 的 signature family 与目标 CDN 不一致，会明确标记“跨 family”，这种结果只作为参考。目标节点返回 HTTP 403 时，脚本还会用相同 URL/headers 试一次原始 host：原始 host 成功则说明该资源不接受当前跨 host 改写；原始 host 也失败则更可能是 URL 已失效或请求条件不完整。
 
 ### 测试方法
 
