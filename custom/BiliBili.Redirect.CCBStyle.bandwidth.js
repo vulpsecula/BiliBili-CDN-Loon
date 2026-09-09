@@ -5,7 +5,8 @@ const DEFAULT_TEST_BVID = "BV1eL4k6jEjd";
 const DEFAULT_TARGET_SECONDS = 6;
 const MIN_TARGET_SECONDS = 3;
 const MAX_TARGET_SECONDS = 10;
-const API_TIMEOUT_MS = 5000;
+const PAGE_TIMEOUT_MS = 7000;
+const RECENT_SAMPLE_TTL_MS = 30 * 60 * 1000;
 const WARMUP_TIMEOUT_MS = 6000;
 const CALIBRATION_TIMEOUT_MS = 8000;
 const TRANSFER_TIMEOUT_MS = 10000;
@@ -19,6 +20,15 @@ const API_HEADERS = {
   Origin: "https://www.bilibili.com",
   Accept: "application/json,text/plain,*/*",
   "Accept-Encoding": "identity",
+  [AUTO_HEADER]: "1",
+};
+
+const PAGE_HEADERS = {
+  "User-Agent": API_HEADERS["User-Agent"],
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+  "Cache-Control": "no-cache",
+  Pragma: "no-cache",
   [AUTO_HEADER]: "1",
 };
 
@@ -203,24 +213,6 @@ function contentRangeTotal(response) {
   return !match || match[1] === "*" ? 0 : Number(match[1]) || 0;
 }
 
-async function getJson(url) {
-  const { error, response, data } = await hardHttpGet({
-    url,
-    node: "DIRECT",
-    headers: API_HEADERS,
-    "auto-redirect": false,
-    "auto-cookie": false,
-  }, API_TIMEOUT_MS);
-  if (error) throw new Error(String(error));
-  const status = responseStatus(response);
-  if (status !== 200) throw new Error(`HTTP ${status}`);
-  try {
-    return JSON.parse(typeof data === "string" ? data : String(data || ""));
-  } catch (error) {
-    throw new Error(`JSON 解析失败: ${error}`);
-  }
-}
-
 function addStreamUrls(out, stream) {
   if (!stream || typeof stream !== "object") return;
   for (const key of ["baseUrl", "base_url", "url"]) {
@@ -249,25 +241,102 @@ function mediaUrlsFromPlayurl(payload) {
   return [...new Set(out)];
 }
 
-async function freshDonor(bvid, targetFamily) {
-  const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`;
-  const view = await getJson(viewUrl);
-  if (!view || view.code !== 0 || !view.data || !view.data.cid) {
-    throw new Error(`获取测试视频信息失败: ${(view && view.message) || "unknown"}`);
+function extractEmbeddedJson(text, marker) {
+  const markerAt = String(text || "").indexOf(marker);
+  if (markerAt < 0) return null;
+  let start = markerAt + marker.length;
+  while (start < text.length && /\s/.test(text[start])) start += 1;
+  const opening = text[start];
+  if (opening !== "{" && opening !== "[") return null;
+  const closing = opening === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === opening) depth += 1;
+    else if (ch === closing) {
+      depth -= 1;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); } catch (_) { return null; }
+      }
+    }
   }
-  const cid = view.data.cid;
-  const playurlUrl = `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}&qn=80&fnver=0&fnval=16&fourk=1&otype=json`;
-  const play = await getJson(playurlUrl);
-  if (!play || play.code !== 0) throw new Error(`获取测试媒体 URL 失败: ${(play && play.message) || "unknown"}`);
-  const urls = mediaUrlsFromPlayurl(play);
-  if (!urls.length) throw new Error("测试视频没有可用的 DASH/durl 媒体 URL");
-  const matched = urls.find((url) => urlFamily(url) === targetFamily);
+  return null;
+}
+
+function recentSignedDonor(targetFamily) {
+  const status = readMap(STATUS_KEY)[networkKey()];
+  if (!status || status.source !== "cdn-request") return null;
+  if (typeof status.at !== "number" || Date.now() - status.at > RECENT_SAMPLE_TTL_MS) return null;
+  if (!isMediaUrl(status.sampleUrl)) return null;
+  const family = urlFamily(status.sampleUrl);
   return {
-    url: matched || urls[0],
-    family: urlFamily(matched || urls[0]),
-    exactFamily: Boolean(matched),
-    playurlUrl,
+    url: status.sampleUrl,
+    family,
+    exactFamily: family === targetFamily,
+    source: "最近真实视频请求",
   };
+}
+
+async function pageDonor(bvid, targetFamily) {
+  const pageUrl = `https://www.bilibili.com/video/${encodeURIComponent(bvid)}/`;
+  const { error, response, data } = await hardHttpGet({
+    url: pageUrl,
+    node: "DIRECT",
+    headers: PAGE_HEADERS,
+    "auto-redirect": true,
+    "auto-cookie": true,
+  }, PAGE_TIMEOUT_MS);
+  if (error) throw new Error(`视频网页请求失败：${error}`);
+  const status = responseStatus(response);
+  if (status !== 200) {
+    const suffix = status === 412 ? "（Bilibili 风控拒绝）" : "";
+    throw new Error(`视频网页 HTTP ${status || "无响应"}${suffix}`);
+  }
+
+  const html = typeof data === "string" ? data : String(data || "");
+  const play = extractEmbeddedJson(html, "window.__playinfo__=")
+    || extractEmbeddedJson(html, "window.__playinfo__ =");
+  if (!play) throw new Error("视频网页没有内嵌 __playinfo__");
+
+  const urls = mediaUrlsFromPlayurl(play);
+  if (!urls.length) throw new Error("视频网页 __playinfo__ 没有可用媒体 URL");
+  const matched = urls.find((url) => urlFamily(url) === targetFamily);
+  const selected = matched || urls[0];
+  return {
+    url: selected,
+    family: urlFamily(selected),
+    exactFamily: Boolean(matched),
+    source: `配置 BV 网页（${bvid}）`,
+  };
+}
+
+async function freshDonor(bvid, targetFamily) {
+  let pageError = "";
+  try {
+    return await pageDonor(bvid, targetFamily);
+  } catch (error) {
+    pageError = String(error);
+    console.log(`[BiliBili Redirect] 配置 BV 网页 donor 获取失败：${pageError}`);
+  }
+
+  const recent = recentSignedDonor(targetFamily);
+  if (recent) {
+    console.log("[BiliBili Redirect] 回退到最近真实视频请求的 signed URL，跳过 view/playurl API。");
+    return { ...recent, fallbackReason: pageError };
+  }
+
+  throw new Error(
+    `无法取得测速 signed URL：${pageError}。当前脚本已停止调用容易触发 412 的 view/playurl API；请先正常播放一个 Bilibili 视频，再运行本测速。`
+  );
 }
 
 function swapHost(raw, node) {
@@ -392,17 +461,6 @@ function formatSample(label, sample) {
   return `${label}：${sample.mbps.toFixed(1)} Mbps · ${mib(sample.bytes).toFixed(2)} MiB / ${(sample.elapsedMs / 1000).toFixed(2)} s${requests}${capped}`;
 }
 
-function restoreSyntheticPlayurlStatus(previousStatus, playurlUrl) {
-  if (!playurlUrl) return;
-  const key = networkKey();
-  const map = readMap(STATUS_KEY);
-  const current = map[key];
-  if (!current || current.source !== "playurl-response" || current.requestUrl !== playurlUrl) return;
-  if (previousStatus) map[key] = previousStatus;
-  else delete map[key];
-  writeMap(STATUS_KEY, map, 8);
-}
-
 function notify(title, subtitle, body) {
   console.log("[BiliBili Redirect] ===== 当前 CDN 持续带宽 =====");
   console.log(body);
@@ -428,7 +486,6 @@ function notify(title, subtitle, body) {
   const targetSeconds = configuredTargetSeconds(options);
 
   const key = networkKey();
-  const previousStatus = readMap(STATUS_KEY)[key] || null;
   const profile = isCellular()
     ? {
         name: "蜂窝",
@@ -454,7 +511,7 @@ function notify(title, subtitle, body) {
     const testUrl = swapHost(donor.url, target.node);
 
     console.log(`[BiliBili Redirect] 手动持续带宽测速：${target.node} · family=${target.family} · ${profile.name} · DIRECT`);
-    console.log(`[BiliBili Redirect] 测试视频=${bvid} · 单轮目标=${targetSeconds}s · donor family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family fallback）"}`);
+    console.log(`[BiliBili Redirect] 测试视频=${bvid} · 单轮目标=${targetSeconds}s · donor=${donor.source} · family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family）"}`);
 
     const warmup = await measureOnce(testUrl, profile.warmupBytes, WARMUP_TIMEOUT_MS);
     if (!warmup.ok) throw new Error(`预热失败：${warmup.error}`);
@@ -490,7 +547,8 @@ function notify(title, subtitle, body) {
       `节点：${target.node}`,
       `family：${target.family} · 来源：${target.source}`,
       `网络：${key} · ${profile.name} · DIRECT`,
-      `测试视频：${bvid} · donor=${donor.family}${donor.exactFamily ? "" : "（跨 family）"}`,
+      `测试视频：${bvid}`,
+      `donor：${donor.source} · ${donor.family}${donor.exactFamily ? "" : "（跨 family）"}`,
       `单轮目标：${targetSeconds.toFixed(1)} s · 单轮流量上限：${mib(profile.maxRoundBytes).toFixed(0)} MiB`,
       "",
       formatSample("预热（不计分）", warmup),
@@ -520,7 +578,6 @@ function notify(title, subtitle, body) {
     ].join("\n");
     notify("🎯 当前 CDN 持续带宽", "测速失败", body);
   } finally {
-    restoreSyntheticPlayurlStatus(previousStatus, donor && donor.playurlUrl);
     $done();
   }
 })();
