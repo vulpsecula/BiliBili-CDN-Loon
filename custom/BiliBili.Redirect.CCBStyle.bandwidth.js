@@ -281,6 +281,7 @@ function recentSignedDonor(targetFamily) {
   const headers = status.sampleHeaders && typeof status.sampleHeaders === "object"
     ? { ...status.sampleHeaders }
     : {};
+  if (!Object.keys(headers).length) return null;
   return {
     url: status.sampleUrl,
     family,
