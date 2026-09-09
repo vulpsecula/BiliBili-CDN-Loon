@@ -9,6 +9,7 @@ const TEST_BUDGET_MS = 12000;
 const ENGINE_VERSION = 13;
 const AUTO_HEADER = "X-CCB-Speedtest";
 let CURRENT_SAMPLE_URL = "";
+let CURRENT_SAMPLE_HEADERS = {};
 
 // Mobile-balanced probing: all candidates in the small same-family pool start
 // together so a fourth candidate never gets a quieter, later time slot. The
@@ -79,6 +80,19 @@ function getHeader(headers, wanted) {
   return key ? headers[key] : undefined;
 }
 
+function captureSampleHeaders(headers) {
+  const out = {};
+  for (const name of [
+    "user-agent", "referer", "origin", "accept", "accept-language",
+    "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+    "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+  ]) {
+    const value = getHeader(headers, name);
+    if (value !== undefined && value !== null && String(value)) out[name] = String(value);
+  }
+  return out;
+}
+
 function runtimeConfig() {
   try {
     const config = JSON.parse($config.getConfig());
@@ -131,6 +145,7 @@ function writeStatus(state, extra = {}) {
     network: key,
     source: "cdn-request",
     ...(CURRENT_SAMPLE_URL ? { sampleUrl: CURRENT_SAMPLE_URL } : {}),
+    ...(Object.keys(CURRENT_SAMPLE_HEADERS).length ? { sampleHeaders: CURRENT_SAMPLE_HEADERS } : {}),
     ...extra,
   };
   writeMap(STATUS_KEY, map, 8);
@@ -699,7 +714,10 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
   let requestHost = "";
   try { requestHost = new URL($request.url).hostname; } catch (_) {}
   const sample = describeSample($request.url);
-  if (sample && sample.url) CURRENT_SAMPLE_URL = sample.url;
+  if (sample && sample.url) {
+    CURRENT_SAMPLE_URL = sample.url;
+    CURRENT_SAMPLE_HEADERS = captureSampleHeaders($request.headers);
+  }
   const family = sample ? sample.signatureFamily : "unknown";
 
   if (!auto) {
