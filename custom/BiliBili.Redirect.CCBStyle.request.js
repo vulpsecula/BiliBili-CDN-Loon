@@ -82,13 +82,21 @@ function getHeader(headers, wanted) {
 
 function captureSampleHeaders(headers) {
   const out = {};
-  for (const name of [
-    "user-agent", "referer", "origin", "accept", "accept-language",
-    "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
-    "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
-  ]) {
-    const value = getHeader(headers, name);
-    if (value !== undefined && value !== null && String(value)) out[name] = String(value);
+  if (!headers || typeof headers !== "object") return out;
+  const blocked = new Set([
+    "host", ":authority", "range", "content-length", "accept-encoding",
+    "connection", "transfer-encoding", "cookie", "authorization",
+    "proxy-authorization", AUTO_HEADER.toLowerCase(),
+  ]);
+  for (const [rawName, rawValue] of Object.entries(headers)) {
+    const name = String(rawName || "").toLowerCase();
+    if (!name || blocked.has(name)) continue;
+    if (/cookie|authorization|credential|session|token/i.test(name)) continue;
+    if (rawValue === undefined || rawValue === null) continue;
+    const value = String(rawValue);
+    if (!value || value.length > 2048) continue;
+    out[name] = value;
+    if (Object.keys(out).length >= 32) break;
   }
   return out;
 }
