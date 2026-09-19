@@ -43,6 +43,8 @@ jobs:
           plugin_path = Path("custom/BiliBili.CDN.Redirect.Loon.plugin")
           plugin = plugin_path.read_text(encoding="utf-8")
           expected = [
+              "#!name = BiliBili CDN Redirect for Loon",
+              "#!icon = https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/assets/icon.png",
               "BiliBili.CDN.Redirect.Loon.request.js",
               "BiliBili.CDN.Redirect.Loon.response.js",
               "BiliBili.CDN.Redirect.Loon.bandwidth.js",
@@ -52,6 +54,8 @@ jobs:
           missing = [item for item in expected if item not in plugin]
           if missing:
               raise SystemExit(f"Missing plugin references: {missing}")
+          if not Path("assets/icon.png").is_file():
+              raise SystemExit("Missing assets/icon.png")
 
           forbidden = ("CCB" + "Style", "CCB" + " Style", "CCB" + "_STYLE")
           text_files = [

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.1
+
+- 为 Loon 插件加入独立图片图标，并移除插件名称前的 `📺` 文本 emoji。
+- 新增 `assets/icon.png`，插件通过 `#!icon` 使用该图标。
+- README 顶部改为图片品牌图标，不再依赖文本 emoji 作为 logo。
+
 ## 1.9.0
 
 - 项目与插件统一命名为 **BiliBili CDN Redirect for Loon**。

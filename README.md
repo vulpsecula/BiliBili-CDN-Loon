@@ -1,4 +1,6 @@
-# 📺 BiliBili CDN Redirect for Loon
+<p align="center"><img src="assets/icon.png" width="128" alt="BiliBili CDN Redirect for Loon icon"></p>
+
+# BiliBili CDN Redirect for Loon
 
 [![Validate](https://github.com/vulpsecula/BiliBili-CDN-Loon/actions/workflows/validate.yml/badge.svg)](https://github.com/vulpsecula/BiliBili-CDN-Loon/actions/workflows/validate.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
