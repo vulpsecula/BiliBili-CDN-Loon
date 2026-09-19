@@ -1,134 +1,179 @@
 # BiliBili CDN Redirect for Loon
 
-这是基于 `Biliverse/Redirect` 的非官方 Loon 专用扩展，用于把 Bilibili 普通视频 CDN 重定向到手动选择或自动测速得到的节点。
+这是基于 [Biliverse/Redirect](https://github.com/Biliverse/Redirect) 的非官方 **Loon 专用** Bilibili CDN 重定向插件。它提供固定 CDN、按 CDN family 自动选择、当前节点持续带宽测试和状态诊断。
 
-当前运行结构只有一套自动测速引擎：
+## 快速开始
 
-- **playurl response hook**：解析 JSON DASH/durl。手动模式可提前改写媒体 URL；自动模式只应用已经存在的有效 family 缓存。
-- **CDN request fallback**：负责自动测速、最终 CDN 选择和真实 `/upgcxcode/` 请求改写，是自动模式唯一的测速引擎。
-- **Generic Scripts**：`📊 查看自动选择节点结果` 只读状态；`🎯 测试当前 CDN 持续带宽` 只做单节点手动长测，不修改自动选择。
+1. 使用 README 中的“一键导入 Loon”安装插件。
+2. 安装并信任 Loon MitM 证书。
+3. 为确保 QUIC/HTTP3 视频流量也能进入 MitM / Script，开启：
+   ```text
+   MitM → QUIC 回退保护
+   ```
+4. 在插件设置中选择一个 **目标 CDN 节点**。
+5. 固定节点时关闭 `⚡ 自动选择节点`；需要自动选择时打开它。
+6. 正常播放一个 Bilibili 视频。
+7. 运行 `📊 查看自动选择节点结果` 检查当前状态；如果要做单节点精测，先播放几秒，再运行 `🎯 测试当前 CDN 持续带宽`。
+
+自动模式首次遇到当前网络下尚未缓存的 CDN family 时，会使用当前真实视频请求进行一次小样本吞吐测试；单轮自动测速总预算约 12 秒。成功结果按 **网络 + running_model + family** 缓存 6 小时，因此后续请求通常直接使用缓存。
 
 ## 安装要求
 
-Loon 需要 `3.5.1(983)` 或更高版本，并需要安装、信任 MITM 证书。
+- Loon **3.5.1 (983)+**
+- 已安装并信任 MitM 证书
+- 为接管 QUIC/HTTP3 视频流量，开启 **MitM → QUIC 回退保护**
+- 不要同时启用其他修改同一批 Bilibili playurl 或 `/upgcxcode/` 请求的固定 CDN 插件
 
-从 `1.9.0` 起，插件文件与运行时命名统一为 **BiliBili CDN Redirect for Loon**。旧的 Raw 插件地址不再维护；升级时请使用 README 中当前的一键导入链接重新安装。持久化缓存命名空间也已更新，因此升级后自动选择缓存会重新建立。
+插件支持 iOS、iPadOS、macOS，并已声明 tvOS。tvOS 当前属于**初步支持**：Loon 脚本层已适配，但 Bilibili Apple TV 客户端的全部 host/path 仍需要更多实机验证。
 
-还必须开启：
+## 从旧版本升级
+
+从 **1.9.0** 起，项目统一使用 **BiliBili CDN Redirect for Loon** 命名：
 
 ```text
-MitM → QUIC 回退保护
+custom/BiliBili.CDN.Redirect.Loon.plugin
+custom/BiliBili.CDN.Redirect.Loon.request.js
+custom/BiliBili.CDN.Redirect.Loon.response.js
+custom/BiliBili.CDN.Redirect.Loon.bandwidth.js
+custom/BiliBili.CDN.Redirect.Loon.result.js
 ```
 
-插件不再额外维护 QUIC `REJECT` 规则；命中本插件 MitM hostname 的 QUIC/HTTP3 流量由 Loon 原生机制负责回退到可被 HTTP/MITM 脚本处理的连接。
+旧 Raw 插件地址不再维护。若你使用的是 1.8.x 或更早版本，建议：
+
+1. 停用或删除旧插件条目；
+2. 使用 README 中当前的一键导入链接重新安装；
+3. 重新确认插件参数；
+4. 正常播放一个视频，让自动选择状态和最近真实播放样本重新建立。
+
+1.9.0 同时更新了 PersistentStore namespace，所以旧自动选择缓存不会被继续读取，这是预期行为。
 
 ## 插件参数
 
 ### 目标 CDN 节点
 
-关闭 `⚡ 自动选择节点` 时始终使用该节点。自动测速失败或已有测速任务占用锁时，也会把它作为 fallback。
+关闭 `⚡ 自动选择节点` 时始终使用该节点。
+
+自动模式下，它仍然是安全 fallback：如果测速失败、当前测速锁被其他请求占用，或者无法取得有效自动结果，就回退到这里选择的节点。
+
+地区分隔项只用于下拉列表视觉分组，不应作为实际 CDN 选择。
 
 ### ⚡ 自动选择节点
 
-关闭时完全服从手动节点；开启时按当前网络和 CDN family 使用自动缓存，缓存失效时由真实视频请求触发同 family 吞吐测速。
+关闭时完全服从手动 CDN。
+
+开启后，每条真实媒体请求会先检查当前 **网络 + running_model + CDN family** 是否已有有效缓存：
+
+```text
+有效 family 缓存
+      ↓ 有
+直接使用缓存 CDN
+
+      ↓ 没有
+同 family 真实视频吞吐测试
+      ↓
+成功：缓存 6 小时
+失败 / 锁占用：回退手动 CDN
+```
+
+自动选择不会修改插件设置里的手动 CDN 选项。
 
 ### 🎞 测试视频 BV号
 
-仅供 `🎯 测试当前 CDN 持续带宽` 使用。默认：
+只用于 `🎯 测试当前 CDN 持续带宽` 在**没有近期真实播放样本**时的 fallback。
+
+默认：
 
 ```text
 BV1eL4k6jEjd
 ```
 
-可改成任意公开 Bilibili 视频 BV 号。手动长测优先使用最近 30 分钟内插件真实拦截到的媒体 signed URL，并复用该真实请求的关键 headers；这种情况下不会访问 Bilibili 网页或 metadata/playurl API。只有没有近期真实样本时，才尝试访问该 BV 的普通网页并读取 `window.__playinfo__`。
+正常情况下，手动长测优先使用最近 30 分钟内真实播放产生的 signed media URL，不需要请求这个 BV 的网页。
 
 ### ⏱ 单轮测速秒数
 
-仅供手动长测使用。默认 `6` 秒，实际限制在 `3–10` 秒，固定测试 3 轮。
+只用于用户主动触发的当前 CDN 持续带宽测试。
 
-## 手动模式
+- 默认：`6` 秒
+- 可设置范围：`3–10` 秒
+- 固定：3 轮正式测试
+
+## 常用模式
+
+### 手动模式
 
 关闭 `⚡ 自动选择节点` 后：
 
-1. JSON playurl 命中时，DASH `baseUrl/base_url/backupUrl/backup_url` 与传统 `durl` 会提前改到手动 CDN；
-2. 后续匹配 `/upgcxcode/` 的真实 CDN 请求仍由 request fallback 改到同一个节点。
+1. playurl JSON 响应命中时，DASH `baseUrl/base_url/backupUrl/backup_url` 与传统 `durl` 会提前改到手动 CDN；
+2. 后续真实 `/upgcxcode/` CDN 请求仍由 request fallback 再次确保使用同一节点。
 
-自动测速不会修改插件里的手动选择。
+这种双层处理提高不同 Bilibili 客户端和播放接口下的兼容性。
 
-## 自动模式
+### 自动模式
 
-每条真实媒体请求按以下顺序处理：
+自动模式只保留**一套测速引擎**：真实 CDN request fallback。
 
-```text
-当前网络 + 当前 CDN family 的有效缓存
-        ↓ 没有
-同 family 真实视频吞吐测试
-        ↓ 失败 / 测速锁被占用
-手动选择的 CDN fallback
-```
+playurl response hook 不会另外启动测速；它只会：
 
-缓存按 family 分开，因此同一个网络可以同时存在：
+- 如果已有对应 family 的有效缓存，提前把媒体 URL 改到缓存节点；
+- 如果没有缓存，保持原 URL，等待真实 CDN request 触发测速。
+
+缓存按 family 独立，因此同一个网络可以同时存在：
 
 ```text
 cos     → ...
-akamai  → ...
 ali     → ...
+hw      → ...
+08      → ...
+regional → ...
+akamai  → 原始节点直通
 ```
 
-COS 与 Akamai 分片交替出现不会互相覆盖缓存。
+Akamai、MCDN 等当前没有额外自动候选池的 family，会保持原始 CDN 单候选直通，不做无意义的跨 family 排名。
 
-## 自动测速算法
+### 📊 查看自动选择节点结果
 
-request fallback 使用当前真实视频 signed URL，只比较同 signature family 的小候选池，并始终把原始 CDN 作为 baseline。
+这个 Generic Script **不会主动测速**。它只读取当前网络对应的缓存和状态，包括：
 
-当前主要 family：COS、Ali、HW、08、regional。Akamai、MCDN 等没有额外自动候选时，会保持原始节点单候选直通并缓存，不做无意义的跨 family 排名。
+- 自动选择是否开启
+- 手动 fallback CDN
+- 最近实际请求
+- 已缓存的 family
+- 最近 winner / Mbps
+- 首测、重试、Top 2 确认统计
+- DNS、timeout、HTTP 等失败诊断
 
-### 全量首测
+### 🎯 测试当前 CDN 持续带宽
 
-最多 4 个候选同时开始：
+这是用户主动触发的**单节点精测**。它不会重新选择 CDN，也不会写入自动测速 family cache。
 
-- Wi-Fi：每个 `512 KiB`；
-- 蜂窝/未知 SSID：每个 `384 KiB`；
-- 单请求最长约 `4 s`；
-- `$httpClient` 显式使用 `DIRECT`；
-- 只接受 `206 Partial Content`；
-- 按实际收到的 bytes / elapsed time 计算 Mbps。
+推荐顺序：
 
-### 失败重试
+```text
+先正常播放视频几秒
+        ↓
+保存最近真实 signed URL + 安全请求头
+        ↓
+运行「测试当前 CDN 持续带宽」
+        ↓
+预热 → 校准 → 3 轮持续 Range 测试
+```
 
-只有首测不足两个成功节点时，DNS、timeout 和其他连接类瞬时失败才低并发重试一次。首测已有至少两个成功节点时，会把剩余时间留给 Top 2 确认。
+#### 测哪个节点
 
-### Top 2 串行确认
+- 自动模式：优先测试最近实际请求使用的 CDN；没有最近请求时取最新有效 family 缓存
+- 手动模式：直接测试当前手动 CDN
 
-预算充足时，对首测 Top 2 串行复测：
+#### donor 获取顺序
 
-- Wi-Fi：每个 `1 MiB`；
-- 蜂窝：每个 `768 KiB`；
-- 单并发；
-- 确认结果和首测结果加权排序。
+1. 最近 30 分钟内真实播放保存的 signed media URL + 请求头；
+2. 如果没有近期真实样本，才尝试配置 BV 的普通网页并读取 `window.__playinfo__`；
+3. 不调用旧的 `/x/web-interface/view` / `/x/player/playurl` donor 链路。
 
-自动测速总预算约 `12 s`，结果按 `网络 + running_model + family` 缓存 6 小时。候选池指纹或 engine version 变化会使对应旧缓存失效。
+因此，**正常使用时建议先播放视频再测速**。Bilibili 普通网页 fallback 有可能直接返回 HTTP 412。
 
-## 🎯 当前 CDN 持续带宽测试
+#### 测试方法
 
-这是用户主动触发的**单节点精测**，不会重新选择 CDN，也不会写入自动测速 family cache。
-
-### 测哪个节点
-
-- 自动模式：优先测试最近实际请求使用的 CDN；没有最近请求时取最新 family 缓存；
-- 手动模式：直接测试当前手动节点。
-
-### 测试视频
-
-使用插件参数 `🎞 测试视频 BV号` 作为无近期样本时的 fallback。正常情况下，脚本直接使用最近 30 分钟内真实播放请求保存的 signed media URL，并复用该请求的 User-Agent、Referer、Origin、Accept 等关键 headers；因此刚正常播放过视频后，单节点测速既不访问 Bilibili 网页，也不依赖 metadata/playurl API。
-
-如果最近真实 signed URL 的 signature family 与目标 CDN 不一致，会明确标记“跨 family”，这种结果只作为参考。目标节点返回 HTTP 403 时，脚本还会用相同 URL/headers 试一次原始 host：原始 host 成功则说明该资源不接受当前跨 host 改写；原始 host 也失败则更可能是 URL 已失效或请求条件不完整。
-
-### 测试方法
-
-桌面参考脚本 `scripts/bili_cdn_bandwidth.py` 可以流式读取并丢弃前段数据；Loon `$httpClient` 只能在完整响应结束后回调，因此移动端不能原样复制按时间窗口读取。
-
-当前手动长测采用：
+Loon `$httpClient` 只能在完整响应结束后回调，不能像桌面流式客户端那样持续读取后随时截断。所以移动端采用多个受控 Range 请求来逼近持续带宽测试：
 
 ```text
 获取新鲜 signed URL
@@ -137,79 +182,159 @@ request fallback 使用当前真实视频 signed URL，只比较同 signature fa
       ↓
 校准 Range（不计分）
       ↓
-根据校准速度决定单次 Range 块大小
+按校准速度决定单次 Range 大小
       ↓
-Round 1：连续串行 Range，直到目标秒数/流量上限
-Round 2：连续串行 Range，直到目标秒数/流量上限
-Round 3：连续串行 Range，直到目标秒数/流量上限
+Round 1：串行 Range
+Round 2：串行 Range
+Round 3：串行 Range
       ↓
 中位数 + 最低/最高 + 稳定度
 ```
 
-连续请求会轮换 Range offset，并发送 `Cache-Control: no-cache`，减少重复读取同一小片段造成的本地缓存干扰。每个网络请求仍单独受控，避免一次把几十 MiB 响应完整缓冲进内存。
+每轮持续到目标时间或流量上限，Range offset 会轮换，并使用 `Cache-Control: no-cache` 减少反复命中相同小片段缓存的影响。
 
-### 默认参数
+默认参数：
 
-单轮目标默认 `6 s`，可在插件中改为 `3–10 s`。
+| 网络 | 预热 | 校准 | 单次 Range | 每轮上限 |
+| --- | ---: | ---: | ---: | ---: |
+| Wi-Fi | 1 MiB | 2 MiB | 约 1–8 MiB | 64 MiB |
+| 蜂窝 | 512 KiB | 1 MiB | 约 512 KiB–4 MiB | 20 MiB |
 
-Wi-Fi：
+如果高速节点先碰到流量上限，该轮会提前结束并标记“达流量上限”。
 
-- 预热 `1 MiB`；
-- 校准 `2 MiB`；
-- 单个 Range 块自适应在约 `1–8 MiB`；
-- 每轮总流量最多 `64 MiB`。
+## 故障排查
 
-蜂窝：
+| 现象 | 含义 / 建议 |
+| --- | --- |
+| 播放视频但完全没有 request script 日志 | 先确认 MitM 证书已信任、插件已启用、QUIC 回退保护已开启，并确认没有其他插件抢先改写相同请求 |
+| `📊 查看自动选择节点结果` 一直显示等待触发 | 先播放一个普通视频几秒。只有匹配到受支持媒体请求后，request fallback 才会写入状态 |
+| 单节点测速一开始出现网页 HTTP 412 | 当前没有可用的近期真实播放样本，脚本进入 BV 网页 fallback，而网页被 Bilibili 风控拒绝；先正常播放视频几秒后再测速 |
+| 日志显示“使用最近真实视频请求”，但预热 HTTP 403 | donor 已取得，问题发生在目标 CDN Range 请求。脚本会再测试原始 host 以辅助判断 |
+| 目标节点 403，但原始 host 成功 | 同一 signed URL 在原始 host 可用，但当前资源不接受该跨 host 改写；换节点或换一个真实播放样本再试 |
+| 目标节点和原始 host 都失败 | signed URL 可能已过期，或当前请求条件仍不完整；重新播放视频生成新样本后立即测试 |
+| 自动模式第一次播放感觉比之后慢 | 未缓存 family 可能触发一次自动测速；成功后该 family 在当前网络下缓存 6 小时 |
+| tvOS / Apple TV 没有命中脚本 | tvOS 当前是初步支持；如果证书与 QUIC 设置正常但没有命中，Bilibili TV 可能使用了尚未覆盖的 host/path，需要根据实际日志补匹配 |
+| 测速值和代理下载速度不一致 | 自动测速与手动长测都显式使用 `DIRECT`，测的是直连 CDN 路径 |
 
-- 预热 `512 KiB`；
-- 校准 `1 MiB`；
-- 单个 Range 块自适应在约 `512 KiB–4 MiB`；
-- 每轮总流量最多 `20 MiB`。
+## 工作原理
 
-如果高速节点先碰到单轮流量上限，该轮会提前结束并在结果中显示“达流量上限”。因此手动长测是“目标时间 + 流量保护”的折中，而不是无限制下载。
+### playurl response hook
 
-结果会显示实际节点与 family、测试 BVID、每轮 Mbps、实际 MiB / 秒数 / Range 次数、三轮中位数、最低/最高、稳定度，以及总测试流量和总耗时。
+插件会处理已覆盖的 Bilibili playurl JSON 响应并递归寻找：
 
-手动长测显式使用 `DIRECT`，不会修改自动测速缓存、6 小时选择结果或当前 CDN。
+- DASH `baseUrl` / `base_url`
+- DASH `backupUrl` / `backup_url`
+- 传统 `durl.url`
+- 传统 `durl.backup_url` / `backupUrl`
 
-## CDN request fallback 覆盖
+手动模式可以直接改写这些 URL；自动模式只应用已有有效 family cache。
 
-当前匹配常见 Bilibili 视频 `/upgcxcode/`：
+### CDN request fallback
+
+这是自动模式唯一的测速引擎，也是最终请求改写层。
+
+当前匹配常见 `/upgcxcode/`：
 
 - `*.bilivideo.com`
 - `*.bilivideo.cn`
 - `*.acgvideo.com`
-- 插件列出的 Akamai UPOS host
+- `upos-hz-mirrorakam.akamaized.net`
+- `upos-sz-mirrorakam.akamaized.net`
+- `upos-bstar1-mirrorakam.akamaized.net`
 
-请求改写只替换 scheme / hostname / port，保留原始 path、signed query 和其他参数。
+请求改写保留原始 path、signed query 和其他参数，主要替换 scheme / hostname / port，并同步相关 Host / authority 信息。
 
-## 查看状态
+当前没有把上游所有 MCDN / PCDN 特殊端口和特殊 path 逻辑直接合入；这类流量后续会按 Loon 的实际客户端需求单独适配。
 
-`📊 查看自动选择节点结果` 不主动测速，只读取当前缓存和状态。重点字段包括最近实际请求、每个 family 的自动选择、最近测速 winner、首测/重试/串行确认成功数，以及 DNS、timeout、HTTP 等失败诊断。
+### 自动测速算法
 
-## 直连与代理
+request fallback 使用当前真实视频 signed URL，只比较同 signature family 的小候选池，并始终把原始 CDN 作为 baseline。
 
-自动测速和手动长测的探针均显式使用 `DIRECT`，因此结果反映直连 CDN 路径。如果你让 Bilibili 视频实际走代理，测速结果不等于代理路径带宽。
+当前有多候选自动比较的主要 family：
+
+- COS
+- Ali
+- HW
+- 08
+- regional
+
+首测：
+
+- 最多 4 个候选同时开始
+- Wi-Fi：每个 512 KiB
+- 蜂窝 / 未识别 SSID：每个 384 KiB
+- 单请求最长约 4 秒
+- `$httpClient` 显式使用 `DIRECT`
+- 只接受 `206 Partial Content`
+- 按实际收到的 bytes / elapsed time 计算 Mbps
+
+失败重试：
+
+- 只有首测不足两个成功节点时，才对 DNS、timeout 等连接类瞬时失败低并发重试一次
+- 首测已有至少两个成功节点时，会把剩余预算优先留给 Top 2 确认
+
+Top 2 串行确认：
+
+- Wi-Fi：每个 1 MiB
+- 蜂窝：每个 768 KiB
+- 单并发
+- 确认结果与首测结果加权排序
+
+自动测速总预算约 12 秒。候选池指纹或内部 engine version 变化时，对应旧缓存会自动失效。
+
+## 隐私与网络行为
+
+### 最近真实播放样本
+
+为了让单节点持续带宽测试尽量复现真实播放环境，request script 会在 PersistentStore 中临时保存最近媒体请求的：
+
+- signed media URL
+- 一组用于复现请求的非敏感 headers
+- 当前网络与最近 CDN 状态
+
+保存 headers 时会主动排除或拒绝持久化：
+
+- `Cookie`
+- `Authorization` / `Proxy-Authorization`
+- 名称包含 `credential`、`session`、`token` 的字段
+- `Host` / `:authority`
+- `Range`、`Content-Length`、`Accept-Encoding`
+- 连接控制字段和插件自己的内部测速 header
+
+最近真实 signed URL 只作为本地 Loon PersistentStore 中的测速 donor，不会被上传到本项目或其他服务。
+
+### DIRECT
+
+自动测速和手动持续带宽测试中的 `$httpClient` 探针均显式使用 `DIRECT`。因此：
+
+- 测速反映的是设备到 CDN 的直连路径；
+- 如果实际视频被你的其他规则送进代理，测速值不代表代理路径；
+- 手动持续带宽测试会产生明显真实视频流量。
 
 ## 手动节点列表
 
-插件手动下拉保留最近一次全量持续带宽测试中成功返回媒体数据的 CCB 节点。它是特定网络、时间和视频资源下的可用性快照，不代表未保留节点永久不可用。
+当前下拉列表保留的是 **2026-08-29** 全量持续带宽测试中成功返回媒体数据的节点。
 
-自动测速不会遍历整个手动下拉，只使用代码中明确的小 family 候选池。
+这只是特定时间、网络和视频资源下的可用性快照：
 
-## 注意事项
+- 列表中的节点未来仍可能失效或变慢；
+- 未保留节点不代表永久不可用；
+- 自动选择不会遍历整个下拉列表，只使用代码中明确的小型 family 候选池。
 
-- 不要同时启用其他修改同一批 Bilibili playurl 或 `/upgcxcode/` 请求的固定 CDN 插件；
-- 必须开启 Loon 的 `MitM → QUIC 回退保护`；
-- 手动持续带宽测试会产生明显真实视频流量，特别是 Wi-Fi 高带宽节点和较长 `单轮测速秒数` 设置；
-- CDN、播放接口和签名策略可能变化，异常时优先查看 request script 日志和两个 Generic Script 输出。
+如需在桌面环境重新评估完整 CCB 节点，可以使用：
 
-## 与上游的关系
+```text
+scripts/bili_cdn_bandwidth.py
+```
 
-本分支与插件为非官方修改，不隶属于 Biliverse、CCB、Bilibili 或 Bilibili Accelerator。
+详见 [scripts/README.md](../scripts/README.md)。
+
+## 上游与来源
+
+本项目是非官方 fork，不隶属于 Biliverse、CCB、Bilibili 或 Bilibili Accelerator。
 
 - Based on [Biliverse/Redirect](https://github.com/Biliverse/Redirect)
 - CDN list based on [Kanda-Akihito-Kun/ccb](https://github.com/Kanda-Akihito-Kun/ccb)
 - Auto speed-test approach inspired by [realzza/bilibili-accelerator](https://github.com/realzza/bilibili-accelerator)
 
-原项目授权条款见各自仓库。
+授权条款见仓库根目录 [LICENSE](../LICENSE)。
