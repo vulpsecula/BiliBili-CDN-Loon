@@ -4,7 +4,7 @@
 #!homepage = https://github.com/vulpsecula/BiliBili-CDN-Loon
 #!tag = Bilibili,CDN,视频
 #!type = normal
-#!version = 1.8.2
+#!version = 1.8.3
 #!system = iOS,iPadOS,tvOS,macOS
 #!system_version = 15
 #!loon_version = 3.5.1(983)
@@ -18,9 +18,9 @@ test_seconds = input,6,type=number,tag=⏱ 单轮测速秒数,desc=手动持续�
 [Script]
 response if ${url} ~= /^https?:\/\/api\.(?:bilibili\.com|biliapi\.net)\/(?:x\/player\/(?:(?:wbi\/)?playurl|wbi\/v2)|pgc\/player\/(?:api|web)(?:\/v\d+)?\/playurl(?:\/html5)?|pugv\/player\/web\/playurl)(?:\?|$)/i && ${response.status} == 200 then script("https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.response.js", {${cdn}, ${auto}}) with tag="📺 BiliBili.Redirect.CCBStyle.playurl", timeout=30, requires_body=true
 request if ${url} ~= /^https?:\/\/(?:(?:[A-Za-z0-9-]+\.)*(?:bilivideo|acgvideo)\.com|(?:[A-Za-z0-9-]+\.)*bilivideo\.cn)(?::[0-9]+)?\/upgcxcode\//i && ${request.header['X-CCB-Speedtest']} == null then script("https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.request.js", {${cdn}, ${auto}}) with tag="📺 BiliBili.Redirect.CCBStyle.upgcxcode", timeout=30
-request if ${url} ~= /^https?:\/\/upos-(?:hz|bstar1)-mirrorakam\.akamaized\.net(?::[0-9]+)?\/upgcxcode\//i && ${request.header['X-CCB-Speedtest']} == null then script("https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.request.js", {${cdn}, ${auto}}) with tag="📺 BiliBili.Redirect.CCBStyle.akamaized", timeout=30
+request if ${url} ~= /^https?:\/\/upos-(?:hz|sz|bstar1)-mirrorakam\.akamaized\.net(?::[0-9]+)?\/upgcxcode\//i && ${request.header['X-CCB-Speedtest']} == null then script("https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.request.js", {${cdn}, ${auto}}) with tag="📺 BiliBili.Redirect.CCBStyle.akamaized", timeout=30
 generic then script("https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.bandwidth.js", {${cdn}, ${auto}, ${test_bvid}, ${test_seconds}}) with tag="🎯 测试当前 CDN 持续带宽", img_url="speedometer.system", timeout=60
 generic then script("https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.result.js", {${cdn}, ${auto}}) with tag="📊 查看自动选择节点结果", img_url="list.bullet.rectangle.system", timeout=10
 
 [MITM]
-hostname = api.bilibili.com, api.biliapi.net, *.bilivideo.com, *.bilivideo.cn, *.acgvideo.com, upos-hz-mirrorakam.akamaized.net, upos-bstar1-mirrorakam.akamaized.net
+hostname = api.bilibili.com, api.biliapi.net, *.bilivideo.com, *.bilivideo.cn, *.acgvideo.com, upos-hz-mirrorakam.akamaized.net, upos-sz-mirrorakam.akamaized.net, upos-bstar1-mirrorakam.akamaized.net
