@@ -1,44 +1,52 @@
-# 🪐 BiliUniverse: 🔀 Redirect
-自动化重定向 CDN，让播放更流畅
+# 📺 BiliBili CDN Redirect for Loon
 
-## Loon 扩展
+面向 Loon 的 Bilibili 视频 CDN 重定向插件。支持手动选择 CDN、按 CDN family 自动测速选择节点，以及用户主动触发的当前 CDN 持续带宽测试。
 
-本 fork 额外提供一个仅面向 Loon 的可选 CDN 插件，用于重定向 Bilibili 普通视频 CDN。手动列表仅保留最近一次全量持续带宽测试中可请求成功的 CCB 节点。
-需要 Loon `3.5.0(969)` 或更高版本，并在 Loon 的 MitM 设置中开启 **QUIC 回退保护**，让命中 MitM 域名的 HTTP/3/QUIC 视频流量回退到可被脚本处理的连接。
+## 安装
 
-- [一键导入 Loon](https://www.nsloon.com/openloon/import?plugin=https%3A%2F%2Fraw.githubusercontent.com%2Fvulpsecula%2FBiliBili-CDN-Loon%2Fmain%2Fcustom%2FBiliBili.Redirect.CCBStyle.plugin)
-- [查看 Raw 插件](https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.Redirect.CCBStyle.plugin)
-- [使用说明](docs/CCB_STYLE_LOON.md)
+需要 Loon `3.5.1(983)` 或更高版本，并安装、信任 MitM 证书。建议开启 **MitM → QUIC 回退保护**，让命中 MitM 域名的 QUIC/HTTP3 视频流量回退到可被脚本处理的连接。
 
-### 自动选择节点
+- [一键导入 Loon](https://www.nsloon.com/openloon/import?plugin=https%3A%2F%2Fraw.githubusercontent.com%2Fvulpsecula%2FBiliBili-CDN-Loon%2Fmain%2Fcustom%2FBiliBili.CDN.Redirect.Loon.plugin)
+- [查看 Raw 插件](https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/custom/BiliBili.CDN.Redirect.Loon.plugin)
+- [使用说明](docs/BILIBILI_CDN_REDIRECT_FOR_LOON.md)
 
-开启 `⚡ 自动选择节点` 后，CDN request fallback 会使用当前真实视频的 signed URL，只在同 CDN family 的小候选池中比较吞吐：
+> 从 `1.9.0` 起插件文件与运行时命名已统一。旧 Raw 插件地址不再维护；从旧版本升级时请使用上方链接重新导入。自动选择缓存会重新建立。
 
-1. 最多 4 个候选同时首测：Wi-Fi 每个 `512 KiB`，蜂窝网络每个 `384 KiB`；
-2. 只有首测不足两个可用节点时，才对连接类异常低并发重试；
-3. 预算足够时，对 Top 2 串行确认：Wi-Fi 每个 `1 MiB`，蜂窝网络每个 `768 KiB`；
-4. 确认结果与首测加权排序，确认失败的节点降级；
-5. 最终结果按 `网络 + CDN family` 独立缓存 6 小时，候选池变化会自动使对应旧缓存失效。
+## 功能
 
-Akamai 等只有原始单候选的 family 会静默直通，不执行无意义测速。测速完成后只有在实际切换到不同 CDN 时才可能通知，并有通知冷却。
+- **手动 CDN**：关闭自动选择时，始终使用插件中选定的 CDN。
+- **自动选择节点**：真实视频请求触发同 family 小候选池测速，结果按网络与 family 缓存 6 小时；失败时回退手动 CDN。
+- **playurl 预改写**：JSON DASH/durl 响应可提前应用手动选择或已有自动缓存。
+- **持续带宽测试**：`🎯 测试当前 CDN 持续带宽` 复用最近真实播放的 signed URL 与安全请求头，进行预热、校准和三轮串行 Range 测试，不修改自动选择缓存。
+- **状态查看**：`📊 查看自动选择节点结果` 显示当前网络、各 family 缓存、最近实际请求和失败诊断。
+- **平台**：iOS、iPadOS、macOS、tvOS。
 
-JSON `playurl` response hook 不再维护第二套测速引擎：手动模式仍可提前改写 DASH/durl；自动模式只应用已经存在的有效 family 缓存，未缓存的 family 交给 request fallback 统一测速。
+## 仓库结构
 
-### 手动持续带宽测试
+```text
+custom/
+  BiliBili.CDN.Redirect.Loon.plugin
+  BiliBili.CDN.Redirect.Loon.request.js
+  BiliBili.CDN.Redirect.Loon.response.js
+  BiliBili.CDN.Redirect.Loon.bandwidth.js
+  BiliBili.CDN.Redirect.Loon.result.js
 
-插件菜单提供 `🎯 测试当前 CDN 持续带宽`。它不会重新选节点，而是针对当前正在使用/最近选择的单个 CDN 做更长的串行持续测试：
+docs/
+  BILIBILI_CDN_REDIRECT_FOR_LOON.md
 
-- 自动模式优先取最近实际请求的 CDN；没有最近请求时取最新 family 缓存；手动模式直接测试当前手动节点；
-- `🎞 测试视频 BV号` 可在插件设置中自行填写，默认 `BV1eL4k6jEjd`；手动长测优先复用最近 30 分钟内真实播放请求保存的 signed URL 和关键请求头，不访问 Bilibili 网页/API；没有近期真实样本时，才尝试从该 BV 的普通网页内嵌 `__playinfo__` 获取 donor；
-- `⏱ 单轮测速秒数` 默认 `6` 秒，可配置为 `3–10` 秒，正式测试固定进行 3 轮；
-- 先做不计分预热和校准，再根据校准带宽自适应每个 Range 请求块大小；
-- 每一正式轮会连续串行请求多个 Range，直到达到目标时间或单轮流量上限，而不是只下载一个短样本；
-- Wi-Fi 单轮流量上限 `64 MiB`，蜂窝网络单轮上限 `20 MiB`；结果显示每轮实际秒数、流量、Range 次数、中位数、最低/最高值和稳定度；
-- 测试流量显式使用 `DIRECT`，且不会修改自动测速缓存、6 小时选择结果或当前 CDN。
+scripts/
+  bili_cdn_bandwidth.py
+  README.md
+```
 
-这个手动测试参考 `scripts/bili_cdn_bandwidth.py` 的“预热不计分、串行多轮、中位数/最低值”思路。由于 Loon `$httpClient` 只能在完整响应结束后回调，移动端实现改为连续多个受控 Range 请求来逼近按时间窗口的持续带宽测量，同时避免一次把超大响应缓冲进内存。
+`custom/` 是 Loon 运行时；`scripts/` 中的 Python 工具仅用于桌面环境下的完整 CDN 持续带宽参考测试，不是插件运行依赖。
 
-如需在电脑上对完整 CCB 节点进行更长时间的持续带宽评估，可使用独立的[本地参考测速脚本](scripts/README.md)。该脚本仅用于离线比较，不是 Loon 插件的运行时依赖。
+## 上游与来源
 
-> [!IMPORTANT]
-> 这是非官方 fork 的扩展，不隶属于 BiliUniverse、CCB、Bilibili Accelerator 或 Bilibili。不要与其他针对同一批视频请求的固定 CDN 重写同时启用。
+本项目是非官方 fork，不隶属于 Biliverse、CCB、Bilibili 或 Bilibili Accelerator。
+
+- Based on [Biliverse/Redirect](https://github.com/Biliverse/Redirect)
+- CDN list based on [Kanda-Akihito-Kun/ccb](https://github.com/Kanda-Akihito-Kun/ccb)
+- Auto speed-test approach inspired by [realzza/bilibili-accelerator](https://github.com/realzza/bilibili-accelerator)
+
+授权条款见 [LICENSE](LICENSE)。不要与其他修改同一批 Bilibili playurl 或 `/upgcxcode/` 请求的固定 CDN 插件同时启用。

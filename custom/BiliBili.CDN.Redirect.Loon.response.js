@@ -1,5 +1,5 @@
-const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
-const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
+const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
+const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const ENGINE_VERSION = 13;
 // Keep these values in sync with FAMILY_CANDIDATES in the request script.
@@ -227,7 +227,7 @@ try {
   const cdn = options.cdn;
   const auto = isAutoEnabled(options.auto);
   const requestUrl = ($request && $request.url) || "";
-  console.log(`[BiliBili Redirect] playurl response 命中: ${requestUrl}`);
+  console.log(`[BiliBili CDN Redirect] playurl response 命中: ${requestUrl}`);
 
   if (!$response || typeof $response.body !== "string" || !$response.body) {
     writeStatus("error", { auto, cdn, message: "playurl 响应没有可读取的 JSON body", requestUrl });
@@ -246,7 +246,7 @@ try {
       const initial = processMediaPayload(payload, null);
       if (!initial.sampleUrls.length) {
         writeStatus("waiting", { auto, cdn, message: "playurl 已命中，但响应中没有找到 DASH/durl 媒体 URL", requestUrl });
-        console.log("[BiliBili Redirect] playurl 响应中未找到媒体 URL，保留原响应");
+        console.log("[BiliBili CDN Redirect] playurl 响应中未找到媒体 URL，保留原响应");
         $done({});
       } else if (!auto) {
         if (typeof cdn !== "string" || !cdn || isSeparator(cdn)) {
@@ -258,7 +258,7 @@ try {
             family: described ? described.family : "manual",
           }));
           writeStatus("manual", { auto, cdn, selected: cdn, changed: result.changed, requestUrl });
-          console.log(`[BiliBili Redirect] playurl 手动改写 ${result.changed} 条媒体 URL -> ${cdn}`);
+          console.log(`[BiliBili CDN Redirect] playurl 手动改写 ${result.changed} 条媒体 URL -> ${cdn}`);
           $done({ body: JSON.stringify(payload) });
         }
       } else {
@@ -285,10 +285,10 @@ try {
           requestUrl,
           message: [
             applied.length ? `playurl 已应用现有 family 缓存：${applied.join(" / ")}` : "playurl 没有可直接应用的有效 family 缓存",
-            pending.length ? `未缓存 family ${pending.join(" / ")} 交给 CDN request fallback 触发 v11 自动测速` : "",
+            pending.length ? `未缓存 family ${pending.join(" / ")} 交给 CDN request fallback 触发自动选择测速` : "",
           ].filter(Boolean).join("；"),
         });
-        console.log(`[BiliBili Redirect] playurl 自动模式：应用缓存 ${result.changed} 条；${pending.length ? `待 request fallback 测速 family=${pending.join("/")}` : "全部命中现有缓存"}`);
+        console.log(`[BiliBili CDN Redirect] playurl 自动模式：应用缓存 ${result.changed} 条；${pending.length ? `待 request fallback 测速 family=${pending.join("/")}` : "全部命中现有缓存"}`);
         if (result.changed > 0) $done({ body: JSON.stringify(payload) });
         else $done({});
       }
@@ -296,6 +296,6 @@ try {
   }
 } catch (error) {
   writeStatus("error", { message: `未处理异常: ${error}` });
-  console.log(`[BiliBili Redirect] playurl 未处理异常：${error}`);
+  console.log(`[BiliBili CDN Redirect] playurl 未处理异常：${error}`);
   $done({});
 }

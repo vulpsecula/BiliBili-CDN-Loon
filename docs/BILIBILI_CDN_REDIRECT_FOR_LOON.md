@@ -1,6 +1,6 @@
-# CCB Style for Loon
+# BiliBili CDN Redirect for Loon
 
-这是 `BiliUniverse/Redirect` 的非官方 Loon 扩展，用于把 Bilibili 普通视频 CDN 重定向到手动选择或自动测速得到的节点。
+这是基于 `Biliverse/Redirect` 的非官方 Loon 专用扩展，用于把 Bilibili 普通视频 CDN 重定向到手动选择或自动测速得到的节点。
 
 当前运行结构只有一套自动测速引擎：
 
@@ -10,7 +10,9 @@
 
 ## 安装要求
 
-Loon 需要 `3.5.0(969)` 或更高版本，并需要安装、信任 MITM 证书。
+Loon 需要 `3.5.1(983)` 或更高版本，并需要安装、信任 MITM 证书。
+
+从 `1.9.0` 起，插件文件与运行时命名统一为 **BiliBili CDN Redirect for Loon**。旧的 Raw 插件地址不再维护；升级时请使用 README 中当前的一键导入链接重新安装。持久化缓存命名空间也已更新，因此升级后自动选择缓存会重新建立。
 
 还必须开启：
 
@@ -204,9 +206,9 @@ Wi-Fi：
 
 ## 与上游的关系
 
-本分支与插件为非官方修改，不隶属于 BiliUniverse、CCB、Bilibili 或 Bilibili Accelerator。
+本分支与插件为非官方修改，不隶属于 Biliverse、CCB、Bilibili 或 Bilibili Accelerator。
 
-- Based on [BiliUniverse/Redirect](https://github.com/BiliUniverse/Redirect)
+- Based on [Biliverse/Redirect](https://github.com/Biliverse/Redirect)
 - CDN list based on [Kanda-Akihito-Kun/ccb](https://github.com/Kanda-Akihito-Kun/ccb)
 - Auto speed-test approach inspired by [realzza/bilibili-accelerator](https://github.com/realzza/bilibili-accelerator)
 

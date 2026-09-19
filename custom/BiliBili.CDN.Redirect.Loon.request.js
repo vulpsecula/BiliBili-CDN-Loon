@@ -1,13 +1,13 @@
-const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
-const LOCK_KEY = "BiliBili.Redirect.CCBStyle.speed.lock.v2";
-const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
-const NOTIFY_KEY = "BiliBili.Redirect.CCBStyle.speed.notify.v1";
+const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
+const LOCK_KEY = "BiliBili.CDN.Redirect.Loon.speed.lock.v2";
+const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
+const NOTIFY_KEY = "BiliBili.CDN.Redirect.Loon.speed.notify.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 12000;
 const ENGINE_VERSION = 13;
-const AUTO_HEADER = "X-CCB-Speedtest";
+const AUTO_HEADER = "X-BiliBili-CDN-Redirect-Speedtest";
 let CURRENT_SAMPLE_URL = "";
 let CURRENT_SAMPLE_HEADERS = {};
 
@@ -258,8 +258,8 @@ function rewriteRequest(cdn, reason = "") {
   for (const name of Object.keys(headers)) {
     if (name.toLowerCase() === "host" || name.toLowerCase() === ":authority") headers[name] = cdn;
   }
-  console.log(`[BiliBili Redirect] ✅ 实际使用 CDN：${cdn}${reason ? `（${reason}）` : ""}`);
-  console.log(`[BiliBili Redirect] Host: ${originalHost} -> ${cdn}`);
+  console.log(`[BiliBili CDN Redirect] ✅ 实际使用 CDN：${cdn}${reason ? `（${reason}）` : ""}`);
+  console.log(`[BiliBili CDN Redirect] Host: ${originalHost} -> ${cdn}`);
   $done({ url: url.toString(), headers });
 }
 
@@ -529,7 +529,7 @@ function shouldNotify(entry) {
 
 function notifyRanking(entry) {
   if (!shouldNotify(entry)) {
-    console.log(`[BiliBili Redirect] family=${entry.probeFamily} 测速完成，通知已静默（原 CDN 最优或处于 5 分钟冷却期）`);
+    console.log(`[BiliBili CDN Redirect] family=${entry.probeFamily} 测速完成，通知已静默（原 CDN 最优或处于 5 分钟冷却期）`);
     return;
   }
   const top = (entry.ranking || []).slice(0, 5);
@@ -548,9 +548,9 @@ function notifyRanking(entry) {
     ),
   ].join("\n");
   try {
-    $notification.post("📺 BiliBili CDN 自动测速完成", `${entry.bestMbps.toFixed(1)} Mbps · ${entry.bestRegion || "未知地区"}`, body, { clipboard: full });
+    $notification.post("📺 BiliBili CDN Redirect 自动测速完成", `${entry.bestMbps.toFixed(1)} Mbps · ${entry.bestRegion || "未知地区"}`, body, { clipboard: full });
   } catch (_) {
-    $notification.post("📺 BiliBili CDN 自动测速完成", entry.best, body);
+    $notification.post("📺 BiliBili CDN Redirect 自动测速完成", entry.best, body);
   }
 }
 
@@ -593,7 +593,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     probeFamily: sample.signatureFamily, requestHost,
     message: `${candidates.length} 个同 family 候选同时读取 ${profile.probeBytes / 1024} KiB；成功不足两个时才重试；预算允许时 Top 2 串行确认 ${profile.confirmBytes / 1024} KiB。`,
   });
-  console.log(`[BiliBili Redirect] CDN fallback family 移动端吞吐：${sample.signatureFamily}，${candidates.length} 个候选，${profile.probeBytes / 1024} KiB，${profile.name}，DIRECT`);
+  console.log(`[BiliBili CDN Redirect] CDN fallback family 移动端吞吐：${sample.signatureFamily}，${candidates.length} 个候选，${profile.probeBytes / 1024} KiB，${profile.name}，DIRECT`);
 
   const firstPass = await runConcurrent(
     candidates,
@@ -619,14 +619,14 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       probeFamily: sample.signatureFamily, requestHost,
       message: `首测仅 ${firstRanking.length}/${candidates.length} 成功；对 ${retryItems.length} 个瞬时失败节点低并发重试。`,
     });
-    console.log(`[BiliBili Redirect] family=${sample.signatureFamily} 首测失败 ${retryItems.length} 个，开始低并发同尺寸重试`);
+    console.log(`[BiliBili CDN Redirect] family=${sample.signatureFamily} 首测失败 ${retryItems.length} 个，开始低并发同尺寸重试`);
     retries = await runConcurrent(
       retryItems,
       RETRY_CONCURRENCY,
       (item) => probeNode(item, sample, profile.probeBytes, RETRY_TIMEOUT_MS, deadlineAt),
     );
   } else if (firstRanking.length >= 2 && firstPass.some((item) => !item.ok)) {
-    console.log(`[BiliBili Redirect] 首测已有 ${firstRanking.length} 个成功节点，跳过失败重试，将预算留给 Top 2 串行确认`);
+    console.log(`[BiliBili CDN Redirect] 首测已有 ${firstRanking.length} 个成功节点，跳过失败重试，将预算留给 Top 2 串行确认`);
   }
 
   const merged = mergeProbeResults(firstPass, retries);
@@ -649,7 +649,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
       probeFamily: sample.signatureFamily, requestHost,
       message: `并发首测 Top 2：${top2.map((item) => item.node).join(" / ")}；现在逐个读取 ${profile.confirmBytes / 1024} KiB，确认成功节点优先。`,
     });
-    console.log(`[BiliBili Redirect] family=${sample.signatureFamily} Top 2 串行确认：${top2.map((item) => item.node).join(" / ")}，每个 ${profile.confirmBytes / 1024} KiB`);
+    console.log(`[BiliBili CDN Redirect] family=${sample.signatureFamily} Top 2 串行确认：${top2.map((item) => item.node).join(" / ")}，每个 ${profile.confirmBytes / 1024} KiB`);
     confirms = await runConcurrent(
       top2,
       1,
@@ -658,9 +658,9 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     const confirmOk = sortResults(confirms);
     ranking = applyConfirmationRanking(ranking, confirms);
     if (!ranking.length) throw new Error("Top 2 串行确认全部失败且没有可用后备节点");
-    if (confirmOk.length < 2) console.log(`[BiliBili Redirect] Top 2 串行确认仅成功 ${confirmOk.length}/2；确认成功节点优先，确认失败节点降级`);
+    if (confirmOk.length < 2) console.log(`[BiliBili CDN Redirect] Top 2 串行确认仅成功 ${confirmOk.length}/2；确认成功节点优先，确认失败节点降级`);
   } else if (ranking.length >= 2) {
-    console.log(`[BiliBili Redirect] 剩余测速预算不足 7 秒，跳过 Top 2 串行确认`);
+    console.log(`[BiliBili CDN Redirect] 剩余测速预算不足 7 秒，跳过 Top 2 串行确认`);
   }
 
   const best = ranking[0];
@@ -705,8 +705,8 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
   };
   saveRanking(entry);
   notifyRanking(entry);
-  console.log(`[BiliBili Redirect] family=${entry.probeFamily} 最终选择：${entry.best} (${entry.bestMbps.toFixed(1)} Mbps)`);
-  console.log(`[BiliBili Redirect] 测速统计：首测 ${entry.stats.firstOk}/${entry.stats.firstAttempts}，重试 ${entry.stats.retryOk}/${entry.stats.retryAttempts}，串行确认 ${entry.stats.confirmOk}/${entry.stats.confirmAttempts}`);
+  console.log(`[BiliBili CDN Redirect] family=${entry.probeFamily} 最终选择：${entry.best} (${entry.bestMbps.toFixed(1)} Mbps)`);
+  console.log(`[BiliBili CDN Redirect] 测速统计：首测 ${entry.stats.firstOk}/${entry.stats.firstAttempts}，重试 ${entry.stats.retryOk}/${entry.stats.retryAttempts}，串行确认 ${entry.stats.confirmOk}/${entry.stats.confirmAttempts}`);
   return entry;
 }
 
@@ -795,12 +795,12 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     releaseLock(lockToken);
     const message = String(error);
     writeStatus("error", { auto, cdn, startedAt, elapsedMs: Date.now() - startedAt, probeFamily: family, message, requestHost });
-    console.log(`[BiliBili Redirect] CDN fallback 自动测速失败：${message}`);
+    console.log(`[BiliBili CDN Redirect] CDN fallback 自动测速失败：${message}`);
     if (typeof cdn === "string" && cdn && !isSeparator(cdn)) rewriteRequest(cdn, "测速失败，手动 fallback");
     else $done({});
   }
 })().catch((error) => {
   writeStatus("error", { message: `未处理异常: ${error}` });
-  console.log(`[BiliBili Redirect] CDN request 未处理异常：${error}`);
+  console.log(`[BiliBili CDN Redirect] CDN request 未处理异常：${error}`);
   $done({});
 });

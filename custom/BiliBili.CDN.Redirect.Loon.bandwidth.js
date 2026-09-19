@@ -1,6 +1,6 @@
-const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
-const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
-const AUTO_HEADER = "X-CCB-Speedtest";
+const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
+const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
+const AUTO_HEADER = "X-BiliBili-CDN-Redirect-Speedtest";
 const DEFAULT_TEST_BVID = "BV1eL4k6jEjd";
 const DEFAULT_TARGET_SECONDS = 6;
 const MIN_TARGET_SECONDS = 3;
@@ -334,7 +334,7 @@ async function pageDonor(bvid, targetFamily) {
 async function freshDonor(bvid, targetFamily) {
   const recent = recentSignedDonor(targetFamily);
   if (recent) {
-    console.log("[BiliBili Redirect] 使用最近真实视频请求的 signed URL 与真实请求头，跳过 Bilibili 网页/API。");
+    console.log("[BiliBili CDN Redirect] 使用最近真实视频请求的 signed URL 与真实请求头，跳过 Bilibili 网页/API。");
     return recent;
   }
 
@@ -342,7 +342,7 @@ async function freshDonor(bvid, targetFamily) {
     return await pageDonor(bvid, targetFamily);
   } catch (error) {
     const pageError = String(error);
-    console.log(`[BiliBili Redirect] 配置 BV 网页 donor 获取失败：${pageError}`);
+    console.log(`[BiliBili CDN Redirect] 配置 BV 网页 donor 获取失败：${pageError}`);
     throw new Error(
       `无法取得测速 signed URL：${pageError}。请先正常播放一个 Bilibili 视频，再运行本测速。`
     );
@@ -488,9 +488,9 @@ function formatSample(label, sample) {
 }
 
 function notify(title, subtitle, body) {
-  console.log("[BiliBili Redirect] ===== 当前 CDN 持续带宽 =====");
+  console.log("[BiliBili CDN Redirect] ===== 当前 CDN 持续带宽 =====");
   console.log(body);
-  console.log("[BiliBili Redirect] ============================");
+  console.log("[BiliBili CDN Redirect] ============================");
   $notification.post(title, subtitle, body);
 }
 
@@ -536,8 +536,8 @@ function notify(title, subtitle, body) {
     donor = await freshDonor(bvid, target.family);
     const testUrl = swapHost(donor.url, target.node);
 
-    console.log(`[BiliBili Redirect] 手动持续带宽测速：${target.node} · family=${target.family} · ${profile.name} · DIRECT`);
-    console.log(`[BiliBili Redirect] 配置视频=${bvid} · 单轮目标=${targetSeconds}s · donor=${donor.source} · family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family）"} · headers=${Object.keys(donor.headers || {}).length ? "真实请求头" : "默认请求头"}`);
+    console.log(`[BiliBili CDN Redirect] 手动持续带宽测速：${target.node} · family=${target.family} · ${profile.name} · DIRECT`);
+    console.log(`[BiliBili CDN Redirect] 配置视频=${bvid} · 单轮目标=${targetSeconds}s · donor=${donor.source} · family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family）"} · headers=${Object.keys(donor.headers || {}).length ? "真实请求头" : "默认请求头"}`);
 
     const warmup = await measureOnce(testUrl, profile.warmupBytes, WARMUP_TIMEOUT_MS, 0, donor.headers);
     if (!warmup.ok) {
@@ -563,7 +563,7 @@ function notify(title, subtitle, body) {
     for (let i = 0; i < ROUND_COUNT; i += 1) {
       const sample = await sustainedRound(testUrl, chunkBytes, targetSeconds, profile.maxRoundBytes, totalBytes, donor.headers);
       rounds.push(sample);
-      console.log(`[BiliBili Redirect] ${formatSample(`Round ${i + 1}`, sample)}`);
+      console.log(`[BiliBili CDN Redirect] ${formatSample(`Round ${i + 1}`, sample)}`);
     }
 
     const good = rounds.filter((item) => item.ok && item.mbps > 0);

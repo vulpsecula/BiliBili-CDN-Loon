@@ -1,5 +1,5 @@
-const FAMILY_CACHE_KEY = "BiliBili.Redirect.CCBStyle.speed.family.v1";
-const STATUS_KEY = "BiliBili.Redirect.CCBStyle.status.v1";
+const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
+const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_TEST_MS = 22 * 1000;
 const ENGINE_VERSION = 13;
@@ -145,18 +145,18 @@ function actualRequestSummary(status) {
 }
 
 function notify(subtitle, body, clipboard) {
-  console.log("[BiliBili Redirect] ===== 自动选择节点结果 =====");
+  console.log("[BiliBili CDN Redirect] ===== 自动选择节点结果 =====");
   console.log(body);
-  console.log("[BiliBili Redirect] ==========================");
+  console.log("[BiliBili CDN Redirect] ==========================");
   try {
     $notification.post(
-      "📺 BiliBili 自动选择节点结果",
+      "📺 BiliBili CDN Redirect 自动选择节点结果",
       subtitle,
       body,
       clipboard ? { clipboard } : null,
     );
   } catch (_) {
-    $notification.post("📺 BiliBili 自动选择节点结果", subtitle, body);
+    $notification.post("📺 BiliBili CDN Redirect 自动选择节点结果", subtitle, body);
   }
 }
 
@@ -259,7 +259,7 @@ try {
   }
 } catch (error) {
   const message = `读取自动选择节点结果失败：${error}`;
-  console.log(`[BiliBili Redirect] ${message}`);
-  $notification.post("📺 BiliBili 自动选择节点结果", "读取失败", message);
+  console.log(`[BiliBili CDN Redirect] ${message}`);
+  $notification.post("📺 BiliBili CDN Redirect 自动选择节点结果", "读取失败", message);
   $done();
 }

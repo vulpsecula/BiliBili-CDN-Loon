@@ -1,0 +1,70 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check JavaScript syntax
+        run: |
+          for file in custom/*.js; do
+            node --check "$file"
+          done
+
+      - name: Check Python syntax
+        run: python -m py_compile scripts/bili_cdn_bandwidth.py
+
+      - name: Validate plugin references and naming
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          plugin_path = Path("custom/BiliBili.CDN.Redirect.Loon.plugin")
+          plugin = plugin_path.read_text(encoding="utf-8")
+          expected = [
+              "BiliBili.CDN.Redirect.Loon.request.js",
+              "BiliBili.CDN.Redirect.Loon.response.js",
+              "BiliBili.CDN.Redirect.Loon.bandwidth.js",
+              "BiliBili.CDN.Redirect.Loon.result.js",
+              "X-BiliBili-CDN-Redirect-Speedtest",
+          ]
+          missing = [item for item in expected if item not in plugin]
+          if missing:
+              raise SystemExit(f"Missing plugin references: {missing}")
+
+          forbidden = ("CCB" + "Style", "CCB" + " Style", "CCB" + "_STYLE")
+          text_files = [
+              *Path("custom").glob("*"),
+              Path("README.md"),
+              Path("CHANGELOG.md"),
+              Path("docs/BILIBILI_CDN_REDIRECT_FOR_LOON.md"),
+          ]
+          for path in text_files:
+              if not path.is_file():
+                  continue
+              content = path.read_text(encoding="utf-8")
+              bad = [token for token in forbidden if token in content]
+              if bad:
+                  raise SystemExit(f"{path}: legacy project naming remains: {bad}")
+          PY
