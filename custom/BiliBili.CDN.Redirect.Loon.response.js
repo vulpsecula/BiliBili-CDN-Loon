@@ -1,5 +1,6 @@
 const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
 const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
+const DONOR_POOL_KEY = "BiliBili.CDN.Redirect.Loon.donor.family.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const ENGINE_VERSION = 13;
 // Keep these values in sync with FAMILY_CANDIDATES in the request script.
@@ -70,6 +71,35 @@ function writeStatus(state, extra = {}) {
   const map = readMap(STATUS_KEY);
   map[key] = { state, at: Date.now(), network: key, source: "playurl-response", ...extra };
   writeMap(STATUS_KEY, map, 8);
+}
+
+function savePlayurlDonors(urls) {
+  if (!Array.isArray(urls) || !urls.length) return;
+  const key = networkKey();
+  const map = readMap(DONOR_POOL_KEY);
+  const current = map[key] && typeof map[key] === "object" ? map[key] : {};
+  const families = current.families && typeof current.families === "object" ? current.families : {};
+  const seen = new Set();
+  const now = Date.now();
+
+  for (const raw of urls) {
+    const described = describeMediaUrl(raw);
+    const family = described && described.family;
+    if (!family || family === "unknown" || seen.has(family)) continue;
+    seen.add(family);
+    const familyEntry = families[family] && typeof families[family] === "object" ? families[family] : {};
+    families[family] = {
+      ...familyEntry,
+      playurl: {
+        url: raw,
+        at: now,
+      },
+    };
+  }
+
+  if (!seen.size) return;
+  map[key] = { network: key, at: now, families };
+  writeMap(DONOR_POOL_KEY, map, 8);
 }
 
 function classifyHostFamily(host) {
@@ -244,6 +274,7 @@ try {
 
     if (payload) {
       const initial = processMediaPayload(payload, null);
+      if (initial.sampleUrls.length) savePlayurlDonors(initial.sampleUrls);
       if (!initial.sampleUrls.length) {
         writeStatus("waiting", { auto, cdn, message: "playurl 已命中，但响应中没有找到 DASH/durl 媒体 URL", requestUrl });
         console.log("[BiliBili CDN Redirect] playurl 响应中未找到媒体 URL，保留原响应");

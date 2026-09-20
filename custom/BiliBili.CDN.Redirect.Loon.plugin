@@ -5,7 +5,7 @@
 #!icon = https://raw.githubusercontent.com/vulpsecula/BiliBili-CDN-Loon/main/assets/icon.png
 #!tag = Bilibili,CDN,Loon,视频
 #!type = normal
-#!version = 1.9.1
+#!version = 1.9.2
 #!system = iOS,iPadOS,tvOS,macOS
 #!system_version = 15
 #!loon_version = 3.5.1(983)

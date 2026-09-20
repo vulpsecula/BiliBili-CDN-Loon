@@ -1,6 +1,7 @@
 const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
 const LOCK_KEY = "BiliBili.CDN.Redirect.Loon.speed.lock.v2";
 const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
+const DONOR_POOL_KEY = "BiliBili.CDN.Redirect.Loon.donor.family.v1";
 const NOTIFY_KEY = "BiliBili.CDN.Redirect.Loon.speed.notify.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
@@ -157,6 +158,32 @@ function writeStatus(state, extra = {}) {
     ...extra,
   };
   writeMap(STATUS_KEY, map, 8);
+}
+
+function saveRequestDonor(sample, headers) {
+  if (!sample || !sample.url || !sample.signatureFamily || sample.signatureFamily === "unknown") return;
+  const safeHeaders = headers && typeof headers === "object" ? { ...headers } : {};
+  if (!Object.keys(safeHeaders).length) return;
+
+  const key = networkKey();
+  const map = readMap(DONOR_POOL_KEY);
+  const current = map[key] && typeof map[key] === "object" ? map[key] : {};
+  const families = current.families && typeof current.families === "object" ? current.families : {};
+  const familyEntry = families[sample.signatureFamily] && typeof families[sample.signatureFamily] === "object"
+    ? families[sample.signatureFamily]
+    : {};
+  const now = Date.now();
+
+  families[sample.signatureFamily] = {
+    ...familyEntry,
+    request: {
+      url: sample.url,
+      headers: safeHeaders,
+      at: now,
+    },
+  };
+  map[key] = { network: key, at: now, families };
+  writeMap(DONOR_POOL_KEY, map, 8);
 }
 
 function classifyHostFamily(host) {
@@ -725,6 +752,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
   if (sample && sample.url) {
     CURRENT_SAMPLE_URL = sample.url;
     CURRENT_SAMPLE_HEADERS = captureSampleHeaders($request.headers);
+    saveRequestDonor(sample, CURRENT_SAMPLE_HEADERS);
   }
   const family = sample ? sample.signatureFamily : "unknown";
 

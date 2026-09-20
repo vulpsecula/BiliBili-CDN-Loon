@@ -1,5 +1,6 @@
 const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
 const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
+const DONOR_POOL_KEY = "BiliBili.CDN.Redirect.Loon.donor.family.v1";
 const AUTO_HEADER = "X-BiliBili-CDN-Redirect-Speedtest";
 const DEFAULT_TEST_BVID = "BV1eL4k6jEjd";
 const DEFAULT_TARGET_SECONDS = 6;
@@ -7,9 +8,9 @@ const MIN_TARGET_SECONDS = 3;
 const MAX_TARGET_SECONDS = 10;
 const PAGE_TIMEOUT_MS = 7000;
 const RECENT_SAMPLE_TTL_MS = 30 * 60 * 1000;
-const WARMUP_TIMEOUT_MS = 6000;
-const CALIBRATION_TIMEOUT_MS = 8000;
-const TRANSFER_TIMEOUT_MS = 10000;
+const PREFLIGHT_TIMEOUT_MS = 10000;
+const CALIBRATION_TIMEOUT_MS = 12000;
+const TRANSFER_TIMEOUT_MS = 12000;
 const ROUND_COUNT = 3;
 const CHUNK_TARGET_SECONDS = 1.25;
 const MAX_REQUESTS_PER_ROUND = 64;
@@ -272,23 +273,87 @@ function extractEmbeddedJson(text, marker) {
   return null;
 }
 
-function recentSignedDonor(targetFamily) {
+function recentEnough(at) {
+  return typeof at === "number" && Date.now() - at <= RECENT_SAMPLE_TTL_MS;
+}
+
+function latestRecentRequest(bucket) {
+  let best = null;
+  if (bucket && bucket.families && typeof bucket.families === "object") {
+    for (const [family, entry] of Object.entries(bucket.families)) {
+      const request = entry && entry.request;
+      if (!request || !recentEnough(request.at) || !isMediaUrl(request.url)) continue;
+      const headers = request.headers && typeof request.headers === "object" ? { ...request.headers } : {};
+      if (!Object.keys(headers).length) continue;
+      if (!best || request.at > best.at) {
+        best = { family, url: request.url, headers, at: request.at };
+      }
+    }
+  }
+
   const status = readMap(STATUS_KEY)[networkKey()];
-  if (!status || status.source !== "cdn-request") return null;
-  if (typeof status.at !== "number" || Date.now() - status.at > RECENT_SAMPLE_TTL_MS) return null;
-  if (!isMediaUrl(status.sampleUrl)) return null;
-  const family = urlFamily(status.sampleUrl);
-  const headers = status.sampleHeaders && typeof status.sampleHeaders === "object"
-    ? { ...status.sampleHeaders }
-    : {};
-  if (!Object.keys(headers).length) return null;
-  return {
-    url: status.sampleUrl,
-    family,
-    exactFamily: family === targetFamily,
-    source: "最近真实视频请求",
-    headers,
-  };
+  if (
+    status &&
+    status.source === "cdn-request" &&
+    recentEnough(status.at) &&
+    isMediaUrl(status.sampleUrl) &&
+    status.sampleHeaders &&
+    typeof status.sampleHeaders === "object" &&
+    Object.keys(status.sampleHeaders).length &&
+    (!best || status.at > best.at)
+  ) {
+    best = {
+      family: urlFamily(status.sampleUrl),
+      url: status.sampleUrl,
+      headers: { ...status.sampleHeaders },
+      at: status.at,
+    };
+  }
+  return best;
+}
+
+function recentSignedDonor(targetFamily) {
+  const bucket = readMap(DONOR_POOL_KEY)[networkKey()];
+  const familyEntry = bucket && bucket.families && bucket.families[targetFamily];
+
+  if (familyEntry && familyEntry.request) {
+    const request = familyEntry.request;
+    const headers = request.headers && typeof request.headers === "object" ? { ...request.headers } : {};
+    if (recentEnough(request.at) && isMediaUrl(request.url) && Object.keys(headers).length) {
+      return {
+        url: request.url,
+        family: targetFamily,
+        exactFamily: true,
+        source: "最近同 family 真实视频请求",
+        headers,
+      };
+    }
+  }
+
+  const latestRequest = latestRecentRequest(bucket);
+  if (familyEntry && familyEntry.playurl) {
+    const playurl = familyEntry.playurl;
+    if (recentEnough(playurl.at) && isMediaUrl(playurl.url)) {
+      return {
+        url: playurl.url,
+        family: targetFamily,
+        exactFamily: true,
+        source: "最近 playurl 同 family URL",
+        headers: latestRequest ? latestRequest.headers : null,
+      };
+    }
+  }
+
+  if (latestRequest) {
+    return {
+      url: latestRequest.url,
+      family: latestRequest.family,
+      exactFamily: latestRequest.family === targetFamily,
+      source: latestRequest.family === targetFamily ? "最近同 family 真实视频请求" : "最近真实视频请求",
+      headers: latestRequest.headers,
+    };
+  }
+  return null;
 }
 
 async function pageDonor(bvid, targetFamily) {
@@ -334,7 +399,7 @@ async function pageDonor(bvid, targetFamily) {
 async function freshDonor(bvid, targetFamily) {
   const recent = recentSignedDonor(targetFamily);
   if (recent) {
-    console.log("[BiliBili CDN Redirect] 使用最近真实视频请求的 signed URL 与真实请求头，跳过 Bilibili 网页/API。");
+    console.log(`[BiliBili CDN Redirect] 使用${recent.source}作为 signed URL donor${recent.exactFamily ? "（同 family）" : "（跨 family fallback）"}。`);
     return recent;
   }
 
@@ -355,6 +420,58 @@ function swapHost(raw, node) {
   url.hostname = node;
   url.port = "";
   return url.toString();
+}
+
+function sampleIssue(sample) {
+  if (!sample) return "无响应";
+  if (sample.error) return String(sample.error);
+  if (sample.status) return `HTTP ${sample.status}`;
+  return "无响应";
+}
+
+async function preflightDonor(donor, target, profile) {
+  const testUrl = swapHost(donor.url, target.node);
+  const targetCheck = await measureOnce(
+    testUrl,
+    profile.preflightBytes,
+    PREFLIGHT_TIMEOUT_MS,
+    0,
+    donor.headers,
+  );
+  if (targetCheck.ok) return { ok: true, testUrl, targetCheck, originalCheck: null };
+
+  let originalCheck = null;
+  let originalHost = "";
+  try { originalHost = new URL(donor.url).hostname; } catch (_) {}
+  if (originalHost && originalHost === target.node) {
+    originalCheck = targetCheck;
+  } else {
+    originalCheck = await measureOnce(
+      donor.url,
+      Math.min(profile.preflightBytes, 256 * 1024),
+      PREFLIGHT_TIMEOUT_MS,
+      0,
+      donor.headers,
+    );
+  }
+  return { ok: false, testUrl, targetCheck, originalCheck, originalHost };
+}
+
+function preflightFailureMessage(donor, target, check) {
+  const targetIssue = sampleIssue(check && check.targetCheck);
+  const original = check && check.originalCheck;
+  const sameHost = check && check.originalHost && check.originalHost === target.node;
+
+  if (sameHost) {
+    return `预检失败：目标节点就是 donor 原始 host，${targetIssue}。该 signed URL 可能已失效，或当前直连路径过慢/不可用`;
+  }
+  if (original && original.ok) {
+    if (!donor.exactFamily) {
+      return `预检失败：目标节点 ${targetIssue}；同一 signed URL 在原始 host 正常。当前 donor 为跨 family URL，目标节点可能不接受该跨 host/跨 family 请求，或当前直连路径不可用`;
+    }
+    return `预检失败：目标节点 ${targetIssue}；同一 signed URL 在原始 host 正常，目标节点当前不可用或不接受该 host 改写`;
+  }
+  return `预检失败：目标节点 ${targetIssue}；原始 host 也${original ? sampleIssue(original) : "无响应"}，signed URL 可能已失效或当前网络/请求条件异常`;
 }
 
 function binaryLength(data) {
@@ -515,17 +632,17 @@ function notify(title, subtitle, body) {
   const profile = isCellular()
     ? {
         name: "蜂窝",
-        warmupBytes: 512 * 1024,
-        calibrationBytes: 1024 * 1024,
-        minChunkBytes: 512 * 1024,
+        preflightBytes: 128 * 1024,
+        calibrationBytes: 512 * 1024,
+        minChunkBytes: 256 * 1024,
         maxChunkBytes: 4 * 1024 * 1024,
         maxRoundBytes: 20 * 1024 * 1024,
       }
     : {
         name: "Wi-Fi",
-        warmupBytes: 1024 * 1024,
-        calibrationBytes: 2 * 1024 * 1024,
-        minChunkBytes: 1024 * 1024,
+        preflightBytes: 256 * 1024,
+        calibrationBytes: 1024 * 1024,
+        minChunkBytes: 256 * 1024,
         maxChunkBytes: 8 * 1024 * 1024,
         maxRoundBytes: 64 * 1024 * 1024,
       };
@@ -534,29 +651,43 @@ function notify(title, subtitle, body) {
   const startedAt = Date.now();
   try {
     donor = await freshDonor(bvid, target.family);
-    const testUrl = swapHost(donor.url, target.node);
 
     console.log(`[BiliBili CDN Redirect] 手动持续带宽测速：${target.node} · family=${target.family} · ${profile.name} · DIRECT`);
     console.log(`[BiliBili CDN Redirect] 配置视频=${bvid} · 单轮目标=${targetSeconds}s · donor=${donor.source} · family=${donor.family}${donor.exactFamily ? "（同 family）" : "（跨 family）"} · headers=${Object.keys(donor.headers || {}).length ? "真实请求头" : "默认请求头"}`);
+    console.log(`[BiliBili CDN Redirect] 轻量预检：${Math.round(profile.preflightBytes / 1024)} KiB · timeout=${PREFLIGHT_TIMEOUT_MS}ms`);
 
-    const warmup = await measureOnce(testUrl, profile.warmupBytes, WARMUP_TIMEOUT_MS, 0, donor.headers);
-    if (!warmup.ok) {
-      if (warmup.status === 403) {
-        const originalUrl = new URL(donor.url).toString();
-        const originalCheck = await measureOnce(originalUrl, Math.min(profile.warmupBytes, 512 * 1024), WARMUP_TIMEOUT_MS, 0, donor.headers);
-        if (originalCheck.ok) {
-          throw new Error(`预热失败：目标节点 HTTP 403；同一 signed URL 在原始 host 可用，说明本资源不接受当前跨 host 改写`);
+    let preflight = await preflightDonor(donor, target, profile);
+
+    // A cross-family recent request is still useful as a cheap fallback, but if it
+    // cannot be used on the target node, give the configured BV page one chance
+    // to supply an exact-family URL before declaring the node unavailable.
+    if (!preflight.ok && !donor.exactFamily) {
+      try {
+        const page = await pageDonor(bvid, target.family);
+        if (page.exactFamily && page.url !== donor.url) {
+          console.log("[BiliBili CDN Redirect] 跨 family donor 预检失败，改用配置 BV 的同 family playurl donor 重试。");
+          const retry = await preflightDonor(page, target, profile);
+          if (retry.ok) {
+            donor = page;
+            preflight = retry;
+          } else {
+            console.log(`[BiliBili CDN Redirect] 同 family page donor 预检仍失败：${preflightFailureMessage(page, target, retry)}`);
+          }
         }
-        throw new Error(`预热失败：目标节点 HTTP 403；原始 host 也${originalCheck.status ? ` HTTP ${originalCheck.status}` : "失败"}，signed URL 可能已失效或请求头仍不完整`);
+      } catch (pageError) {
+        console.log(`[BiliBili CDN Redirect] 跨 family donor 失败后的 page donor 回退不可用：${pageError}`);
       }
-      throw new Error(`预热失败：${warmup.error}`);
     }
 
+    if (!preflight.ok) throw new Error(preflightFailureMessage(donor, target, preflight));
+
+    const testUrl = preflight.testUrl;
+    const preflightSample = preflight.targetCheck;
     const calibration = await measureOnce(testUrl, profile.calibrationBytes, CALIBRATION_TIMEOUT_MS, 0, donor.headers);
-    const referenceMbps = calibration.ok ? calibration.mbps : warmup.mbps;
+    const referenceMbps = calibration.ok ? calibration.mbps : preflightSample.mbps;
     const rawChunkBytes = referenceMbps * 1e6 / 8 * CHUNK_TARGET_SECONDS;
     let chunkBytes = roundBytes(clamp(rawChunkBytes, profile.minChunkBytes, profile.maxChunkBytes));
-    const totalBytes = calibration.totalBytes || warmup.totalBytes || 0;
+    const totalBytes = calibration.totalBytes || preflightSample.totalBytes || 0;
     if (totalBytes > 0) chunkBytes = Math.min(chunkBytes, totalBytes);
 
     const rounds = [];
@@ -576,7 +707,7 @@ function notify(title, subtitle, body) {
     const min = Math.min(...rates);
     const max = Math.max(...rates);
     const stability = med > 0 ? min / med * 100 : 0;
-    const totalTraffic = warmup.bytes + calibration.bytes + rounds.reduce((sum, item) => sum + Number(item.bytes || 0), 0);
+    const totalTraffic = preflightSample.bytes + calibration.bytes + rounds.reduce((sum, item) => sum + Number(item.bytes || 0), 0);
     const elapsed = (Date.now() - startedAt) / 1000;
 
     const body = [
@@ -587,7 +718,7 @@ function notify(title, subtitle, body) {
       `donor：${donor.source} · ${donor.family}${donor.exactFamily ? "" : "（跨 family）"}`,
       `单轮目标：${targetSeconds.toFixed(1)} s · 单轮流量上限：${mib(profile.maxRoundBytes).toFixed(0)} MiB`,
       "",
-      formatSample("预热（不计分）", warmup),
+      formatSample("预检（不计分）", preflightSample),
       formatSample("校准（不计分）", calibration),
       `持续请求块：约 ${mib(chunkBytes).toFixed(2)} MiB / 次`,
       ...rounds.map((item, index) => formatSample(`Round ${index + 1}`, item)),

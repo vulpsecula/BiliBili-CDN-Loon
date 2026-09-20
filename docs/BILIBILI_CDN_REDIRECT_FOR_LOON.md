@@ -165,20 +165,26 @@ Akamai、MCDN 等当前没有额外自动候选池的 family，会保持原始 C
 
 #### donor 获取顺序
 
-1. 最近 30 分钟内真实播放保存的 signed media URL + 请求头；
-2. 如果没有近期真实样本，才尝试配置 BV 的普通网页并读取 `window.__playinfo__`；
-3. 不调用旧的 `/x/web-interface/view` / `/x/player/playurl` donor 链路。
+单节点测速现在按目标 CDN family 优先寻找兼容 donor：
 
-因此，**正常使用时建议先播放视频再测速**。Bilibili 普通网页 fallback 有可能直接返回 HTTP 412。
+1. 最近 30 分钟内的**同 family 真实视频请求**；
+2. 最近 playurl 响应保存的**同 family signed URL**，并尽量复用最近真实播放的安全请求头；
+3. 如果没有同 family donor，才使用最近真实视频请求作为**跨 family fallback**；
+4. 如果没有近期真实 donor，尝试配置 BV 的普通网页并读取 `window.__playinfo__`；
+5. 跨 family donor 在目标节点预检失败时，也会额外尝试一次配置 BV 的同 family URL。
+
+不调用旧的 `/x/web-interface/view` / `/x/player/playurl` donor 链路。
+
+因此，**正常使用时仍建议先播放视频再测速**。Bilibili 普通网页 fallback 有可能直接返回 HTTP 412。
 
 #### 测试方法
 
 Loon `$httpClient` 只能在完整响应结束后回调，不能像桌面流式客户端那样持续读取后随时截断。所以移动端采用多个受控 Range 请求来逼近持续带宽测试：
 
 ```text
-获取新鲜 signed URL
+获取优先同 family 的 signed URL
       ↓
-预热 Range（不计分）
+轻量预检 Range（不计分）
       ↓
 校准 Range（不计分）
       ↓
@@ -195,10 +201,10 @@ Round 3：串行 Range
 
 默认参数：
 
-| 网络 | 预热 | 校准 | 单次 Range | 每轮上限 |
+| 网络 | 轻量预检 | 校准 | 单次 Range | 每轮上限 |
 | --- | ---: | ---: | ---: | ---: |
-| Wi-Fi | 1 MiB | 2 MiB | 约 1–8 MiB | 64 MiB |
-| 蜂窝 | 512 KiB | 1 MiB | 约 512 KiB–4 MiB | 20 MiB |
+| Wi-Fi | 256 KiB / 10 s | 1 MiB / 12 s | 约 256 KiB–8 MiB | 64 MiB |
+| 蜂窝 | 128 KiB / 10 s | 512 KiB / 12 s | 约 256 KiB–4 MiB | 20 MiB |
 
 如果高速节点先碰到流量上限，该轮会提前结束并标记“达流量上限”。
 
@@ -209,9 +215,9 @@ Round 3：串行 Range
 | 播放视频但完全没有 request script 日志 | 先确认 MitM 证书已信任、插件已启用、QUIC 回退保护已开启，并确认没有其他插件抢先改写相同请求 |
 | `📊 查看自动选择节点结果` 一直显示等待触发 | 先播放一个普通视频几秒。只有匹配到受支持媒体请求后，request fallback 才会写入状态 |
 | 单节点测速一开始出现网页 HTTP 412 | 当前没有可用的近期真实播放样本，脚本进入 BV 网页 fallback，而网页被 Bilibili 风控拒绝；先正常播放视频几秒后再测速 |
-| 日志显示“使用最近真实视频请求”，但预热 HTTP 403 | donor 已取得，问题发生在目标 CDN Range 请求。脚本会再测试原始 host 以辅助判断 |
-| 目标节点 403，但原始 host 成功 | 同一 signed URL 在原始 host 可用，但当前资源不接受该跨 host 改写；换节点或换一个真实播放样本再试 |
-| 目标节点和原始 host 都失败 | signed URL 可能已过期，或当前请求条件仍不完整；重新播放视频生成新样本后立即测试 |
+| 预检 timeout / HTTP 403 / 其他 HTTP 错误 | 轻量预检失败后都会用同一 signed URL 对照测试 donor 原始 host，不再只对 403 做诊断 |
+| 目标节点失败，但原始 host 成功 | donor 本身有效；目标 CDN 当前不可用、当前直连路径异常，或跨 host / 跨 family 请求不被接受 |
+| 目标节点和原始 host 都失败 | signed URL 可能已过期，或当前网络 / 请求条件异常；重新播放视频生成新样本后立即测试 |
 | 自动模式第一次播放感觉比之后慢 | 未缓存 family 可能触发一次自动测速；成功后该 family 在当前网络下缓存 6 小时 |
 | tvOS / Apple TV 没有命中脚本 | tvOS 当前是初步支持；如果证书与 QUIC 设置正常但没有命中，Bilibili TV 可能使用了尚未覆盖的 host/path，需要根据实际日志补匹配 |
 | 测速值和代理下载速度不一致 | 自动测速与手动长测都显式使用 `DIRECT`，测的是直连 CDN 路径 |
@@ -286,10 +292,10 @@ Top 2 串行确认：
 
 ### 最近真实播放样本
 
-为了让单节点持续带宽测试尽量复现真实播放环境，request script 会在 PersistentStore 中临时保存最近媒体请求的：
+为了让单节点持续带宽测试尽量复现真实播放环境，插件会在 PersistentStore 中按网络和 family 临时保存最近 donor：
 
-- signed media URL
-- 一组用于复现请求的非敏感 headers
+- request script 保存最近真实媒体请求的 signed URL 与一组非敏感 headers
+- response script 保存 playurl 中不同 family 的原始 signed URL
 - 当前网络与最近 CDN 状态
 
 保存 headers 时会主动排除或拒绝持久化：

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.2
+
+- 修复当前 CDN 持续带宽测试在慢节点上可能因 1 MiB / 6 秒预热门槛过高而直接超时的问题。
+- 新增轻量预检：Wi-Fi 256 KiB、蜂窝 128 KiB，最长 10 秒；校准和正式 Range 请求也放宽超时。
+- playurl 与真实 CDN request 现在按网络和 family 保存最近 donor，单节点测速优先使用同 family signed URL。
+- 任意预检失败都会对照测试 donor 原始 host，以区分目标 CDN 不可用、跨 family 不兼容与 signed URL 失效。
+- 跨 family donor 预检失败时，会尝试配置 BV 网页中的同 family donor；网页受 HTTP 412 风控时保留明确诊断。
+
 ## 1.9.1
 
 - 为 Loon 插件加入独立图片图标，并移除插件名称前的 `📺` 文本 emoji。
