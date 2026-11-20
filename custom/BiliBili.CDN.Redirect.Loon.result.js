@@ -9,7 +9,7 @@ const FAMILY_CANDIDATE_FINGERPRINTS = {
   ali: "upos-sz-mirrorali.bilivideo.com|upos-sz-mirroraliov.bilivideo.com|upos-sz-mirroralib.bilivideo.com",
   hw: "upos-sz-mirrorhw.bilivideo.com|upos-sz-estghw.bilivideo.com|upos-sz-mirrorhwo1.bilivideo.com",
   "08": "upos-sz-mirror08ct.bilivideo.com|upos-sz-mirror08c.bilivideo.com|upos-sz-mirror08h.bilivideo.com",
-  regional: "cn-hk-eq-01-08.bilivideo.com|cn-sdjn-cm-02-04.bilivideo.com|cn-sdqd-cu-01-08.bilivideo.com",
+  regional: "cn-hk-eq-01-08.bilivideo.com|cn-sdjn-cm-02-04.bilivideo.com",
 };
 
 function candidateFingerprint(family) {
