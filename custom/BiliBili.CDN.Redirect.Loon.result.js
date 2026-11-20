@@ -2,14 +2,14 @@ const FAMILY_CACHE_KEY = "BiliBili.CDN.Redirect.Loon.speed.family.v1";
 const STATUS_KEY = "BiliBili.CDN.Redirect.Loon.status.v1";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_TEST_MS = 22 * 1000;
-const ENGINE_VERSION = 13;
+const ENGINE_VERSION = 14;
 // Keep these values in sync with FAMILY_CANDIDATES in the request script.
 const FAMILY_CANDIDATE_FINGERPRINTS = {
   cos: "upos-sz-mirrorcosb.bilivideo.com|upos-sz-estgcos.bilivideo.com|upos-sz-mirrorcosov.bilivideo.com",
   ali: "upos-sz-mirrorali.bilivideo.com|upos-sz-mirroraliov.bilivideo.com|upos-sz-mirroralib.bilivideo.com",
   hw: "upos-sz-mirrorhw.bilivideo.com|upos-sz-estghw.bilivideo.com|upos-sz-mirrorhwo1.bilivideo.com",
   "08": "upos-sz-mirror08ct.bilivideo.com|upos-sz-mirror08c.bilivideo.com|upos-sz-mirror08h.bilivideo.com",
-  regional: "cn-hk-eq-01-08.bilivideo.com|cn-sdjn-cm-02-04.bilivideo.com|cn-hbwh-fx-01-01.bilivideo.com",
+  regional: "cn-hk-eq-01-08.bilivideo.com|cn-sdjn-cm-02-04.bilivideo.com|cn-sdqd-cu-01-08.bilivideo.com",
 };
 
 function candidateFingerprint(family) {
