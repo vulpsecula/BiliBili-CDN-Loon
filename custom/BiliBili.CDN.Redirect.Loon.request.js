@@ -7,7 +7,7 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 20 * 1000;
 const TEST_BUDGET_MS = 12000;
-const ENGINE_VERSION = 13;
+const ENGINE_VERSION = 14;
 const AUTO_HEADER = "X-BiliBili-CDN-Redirect-Speedtest";
 let CURRENT_SAMPLE_URL = "";
 let CURRENT_SAMPLE_HEADERS = {};
@@ -49,7 +49,6 @@ const FAMILY_CANDIDATES = {
   regional: [
     { region: "香港", node: "cn-hk-eq-01-08.bilivideo.com" },
     { region: "山东", node: "cn-sdjn-cm-02-04.bilivideo.com" },
-    { region: "湖北", node: "cn-hbwh-fx-01-01.bilivideo.com" },
   ],
 };
 
@@ -233,7 +232,7 @@ function loadCachedRanking(family) {
   if (entry.engineVersion !== ENGINE_VERSION) return null;
   if (entry.candidateFingerprint !== candidateFingerprint(family)) return null;
   if (typeof entry.at !== "number" || Date.now() - entry.at > CACHE_TTL_MS) return null;
-  if (typeof entry.best !== "string" || !entry.best) return null;
+  if (typeof entry.best !== "string" || !entry.best || isExcludedRegionalHost(entry.best)) return null;
   return entry;
 }
 
@@ -356,12 +355,18 @@ function shouldRetryProbe(result) {
   return kind === "timeout" || kind === "dns" || kind === "other";
 }
 
+// Previously excluded regions are not eligible for automatic CDN selection.
+// Both Hebei/Hubei use cn-hb and both Henan/Hunan use cn-hn.
+function isExcludedRegionalHost(host) {
+  return /^cn-(?:bj|hb|ln|sc|hn|cq|sx|fj|js|zj|gd)/i.test(String(host || ""));
+}
+
 function candidateSet(sample) {
   const family = sample ? sample.signatureFamily : "unknown";
   const out = [];
   const seen = new Set();
   const push = (region, node, baseline = false) => {
-    if (!node || seen.has(node)) return;
+    if (!node || seen.has(node) || isExcludedRegionalHost(node)) return;
     seen.add(node);
     out.push({ region, node, baseline });
   };
@@ -786,7 +791,14 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
   }
 
   const candidates = candidateSet(sample);
-  if (candidates.length <= 1) {
+  if (!candidates.length) {
+    writeStatus("waiting", { auto, cdn, probeFamily: family, requestHost,
+      message: "当前 family 没有符合保留地区规则的自动测速候选；保持原始请求，不缓存排除地区。",
+    });
+    $done({});
+    return;
+  }
+  if (candidates.length === 1 && candidates[0].baseline) {
     const entry = savePassthrough(sample, requestHost);
     writeStatus("cached", {
       auto, cdn, selected: entry.best, probeFamily: family, requestHost,
