@@ -375,6 +375,32 @@ function candidateSet(sample) {
   return out;
 }
 
+// Optional DNS preflight (Loon Build 988+). Only a definite NO_ANSWER is
+// filtered out; API absence, network timeout, and other failures fail open.
+function preflightDnsCandidates(candidates) {
+  if (typeof $dns === "undefined" || !$dns || typeof $dns.query !== "function") {
+    return Promise.resolve({ candidates, skipped: [], note: "DNS API 不可用（需 Build 988+），跳过预检" });
+  }
+  return Promise.all(candidates.map((item) => new Promise((resolve) => {
+    if (item.baseline) { resolve({ item, keep: true, reason: "baseline" }); return; }
+    try {
+      $dns.query({ domain: item.node, timeout: 1200 }, (error, result) => {
+        const code = error && error.code ? String(error.code) : "";
+        resolve({ item, keep: code !== "NO_ANSWER", reason: code || (result && result.fromCache ? "cache" : "ok") });
+      });
+    } catch (error) {
+      resolve({ item, keep: true, reason: "unavailable" });
+    }
+  }))).then((checks) => {
+    const skipped = checks.filter((row) => !row.keep).map((row) => row.item.node);
+    return {
+      candidates: checks.filter((row) => row.keep).map((row) => row.item),
+      skipped,
+      note: skipped.length ? `DNS 无地址记录，已跳过 ${skipped.join(", ")}` : "DNS 预检完成，未发现 NO_ANSWER",
+    };
+  });
+}
+
 function probeNode(item, sample, rangeBytes, timeout, deadlineAt) {
   return new Promise((resolve) => {
     const remaining = deadlineAt - Date.now();
@@ -790,9 +816,20 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     return;
   }
 
-  const candidates = candidateSet(sample);
+  let candidates = candidateSet(sample);
+  let dnsPreflight = "";
+  if (isAutoEnabled(options.dns_preflight) && candidates.length) {
+    writeStatus("testing", { auto, cdn, phase: "可选 DNS 预检", probeFamily: family, requestHost,
+      message: "正在检查候选 CDN DNS；仅 NO_ANSWER 会被排除，其他错误保留 HTTP 实测。",
+    });
+    const result = await preflightDnsCandidates(candidates);
+    candidates = result.candidates;
+    dnsPreflight = result.note;
+    console.log(`[BiliBili CDN Redirect] ${dnsPreflight}`);
+  }
   if (!candidates.length) {
     writeStatus("waiting", { auto, cdn, probeFamily: family, requestHost,
+      dnsPreflight,
       message: "当前 family 没有符合保留地区规则的自动测速候选；保持原始请求，不缓存排除地区。",
     });
     $done({});
@@ -826,7 +863,7 @@ async function runAutoSpeedTest(sample, candidates, startedAt, cdn, requestHost)
     releaseLock(lockToken);
     writeStatus("success", {
       auto, cdn, selected: entry.best, bestMbps: entry.bestMbps, bestRegion: entry.bestRegion,
-      elapsedMs: entry.elapsedMs, stats: entry.stats, probeFamily: entry.probeFamily,
+      elapsedMs: entry.elapsedMs, stats: entry.stats, probeFamily: entry.probeFamily, dnsPreflight,
       sampleCount: entry.sampleCount, sampleFamilies: entry.sampleFamilies, requestHost,
       message: `最终使用 ${entry.best}；缓存 6 小时。`,
     });
