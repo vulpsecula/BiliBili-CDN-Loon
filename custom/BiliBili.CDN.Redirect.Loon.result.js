@@ -144,7 +144,10 @@ function actualRequestSummary(status) {
   return `${family} → ${status.selected}`;
 }
 
+let LAST_GENERIC_RESULT = { title: "📊 自动选择 CDN 结果", content: "尚无结果" };
+
 function notify(subtitle, body, clipboard) {
+  LAST_GENERIC_RESULT = { title: `📊 ${subtitle}`, content: clipboard || body };
   console.log("[BiliBili CDN Redirect] ===== 自动选择节点结果 =====");
   console.log(body);
   console.log("[BiliBili CDN Redirect] ==========================");
@@ -185,7 +188,7 @@ try {
       recent ? `最近自动选择：${recent.probeFamily || "unknown"} → ${recent.best}` : "最近自动选择：无",
     ].join("\n");
     notify("手动模式", body);
-    $done();
+    $done(LAST_GENERIC_RESULT);
   } else if (familyEntries.length) {
     const latest = familyEntries[0].entry;
     const ranking = Array.isArray(latest.ranking) ? latest.ranking : [];
@@ -226,7 +229,7 @@ try {
     ].filter(Boolean).join("\n");
     console.log(full);
     notify(`${latest.probeFamily || "CDN"} · ${latest.best}`, body, full);
-    $done();
+    $done(LAST_GENERIC_RESULT);
   } else if (status) {
     const testStart = status.startedAt || status.at;
     const testingAge = status.state === "testing" && testStart ? Date.now() - testStart : 0;
@@ -247,7 +250,7 @@ try {
       staleTesting ? "诊断：本轮测速超过预期时间，可能被 Loon 脚本上限终止。" : null,
     ].filter(Boolean).join("\n");
     notify(shownState, body);
-    $done();
+    $done(LAST_GENERIC_RESULT);
   } else {
     const body = [
       ...common,
@@ -255,11 +258,12 @@ try {
       "播放一个普通视频后再次运行这里即可看到各 CDN family 的独立选择缓存。",
     ].join("\n");
     notify("等待触发", body);
-    $done();
+    $done(LAST_GENERIC_RESULT);
   }
 } catch (error) {
   const message = `读取自动选择节点结果失败：${error}`;
   console.log(`[BiliBili CDN Redirect] ${message}`);
   $notification.post("📺 BiliBili CDN Redirect 自动选择节点结果", "读取失败", message);
-  $done();
+  LAST_GENERIC_RESULT = { title: "📊 读取失败", content: message };
+  $done(LAST_GENERIC_RESULT);
 }
