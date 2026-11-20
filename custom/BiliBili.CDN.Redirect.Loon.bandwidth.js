@@ -604,7 +604,10 @@ function formatSample(label, sample) {
   return `${label}：${sample.mbps.toFixed(1)} Mbps · ${mib(sample.bytes).toFixed(2)} MiB / ${(sample.elapsedMs / 1000).toFixed(2)} s${requests}${capped}`;
 }
 
+let LAST_GENERIC_RESULT = { title: "🎯 当前 CDN 持续带宽", content: "尚无结果" };
+
 function notify(title, subtitle, body) {
+  LAST_GENERIC_RESULT = { title: `${title} · ${subtitle}`, content: body };
   console.log("[BiliBili CDN Redirect] ===== 当前 CDN 持续带宽 =====");
   console.log(body);
   console.log("[BiliBili CDN Redirect] ============================");
@@ -616,14 +619,14 @@ function notify(title, subtitle, body) {
   const target = currentTarget(options);
   if (!target) {
     notify("🎯 当前 CDN 持续带宽", "没有可测速节点", "请先播放一个 Bilibili 视频，或在插件中选择有效的手动 CDN，然后再次运行。");
-    $done();
+    $done(LAST_GENERIC_RESULT);
     return;
   }
 
   const bvid = configuredBvid(options);
   if (!bvid) {
     notify("🎯 当前 CDN 持续带宽", "BV 号格式无效", `当前值：${String(options.test_bvid || "")}\n请输入类似 BV1eL4k6jEjd 的 BV 号。`);
-    $done();
+    $done(LAST_GENERIC_RESULT);
     return;
   }
   const targetSeconds = configuredTargetSeconds(options);
@@ -745,6 +748,6 @@ function notify(title, subtitle, body) {
     ].join("\n");
     notify("🎯 当前 CDN 持续带宽", "测速失败", body);
   } finally {
-    $done();
+    $done(LAST_GENERIC_RESULT);
   }
 })();
